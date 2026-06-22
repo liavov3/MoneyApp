@@ -1,8 +1,9 @@
 """FastAPI application factory — Money App backend v0.0.1 (foundation slice).
 
-Mounts the API under /api/v1. Implemented so far: GET /api/v1/health and
-GET /api/v1/categories (auth-required, server-resolved principal). Remaining
-feature endpoints (quick-add, home, merchants, categorize, recurring) are
+Mounts the API under /api/v1. Implemented so far: GET /api/v1/health,
+GET /api/v1/categories, and POST /api/v1/transactions/quick-add (amount-only
+subset) — all auth-required with a server-resolved principal. Remaining feature
+endpoints (merchant matching, categorize, home, recurring, list/edit/delete) are
 intentionally NOT implemented yet.
 """
 
@@ -17,7 +18,7 @@ from app.db import dispose_engine
 from app.errors import register_exception_handlers
 from app.logging_utils import configure_logging
 from app.middleware import RequestContextMiddleware
-from app.routers import categories, health
+from app.routers import categories, health, transactions
 
 API_V1_PREFIX = "/api/v1"
 
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix=API_V1_PREFIX, tags=["health"])
     app.include_router(categories.router, prefix=API_V1_PREFIX, tags=["categories"])
+    app.include_router(transactions.router, prefix=API_V1_PREFIX, tags=["transactions"])
 
     return app
 

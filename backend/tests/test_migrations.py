@@ -60,4 +60,19 @@ async def test_migration_version_at_head(engine) -> None:
         version = (
             await conn.execute(text("SELECT version_num FROM alembic_version"))
         ).scalar_one()
-        assert version == "0002_seed_categories"
+        assert version == "0003_seed_dev_user"
+
+
+async def test_dev_user_seeded(engine) -> None:
+    """0003 seeds exactly the single dev principal (settings.dev_user_id)."""
+    from app.config import get_settings
+
+    dev_user_id = get_settings().dev_user_id
+    async with engine.connect() as conn:
+        count = (
+            await conn.execute(
+                text("SELECT count(*) FROM users WHERE id = :uid"),
+                {"uid": dev_user_id},
+            )
+        ).scalar_one()
+        assert count == 1
