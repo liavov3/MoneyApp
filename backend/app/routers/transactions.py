@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 import base64
 import binascii
 import json
+import uuid
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, ConfigDict
@@ -205,6 +206,41 @@ class TransactionListResponse(BaseModel):
     next_cursor: str | None = None
 
 
+# Shared projection for a transaction row + display joins (list and single read).
+# `raw_merchant_input` is intentionally NOT selected — sensitive, never returned
+# (API_CONTRACT §9, GET /transactions/{id}).
+_TXN_SELECT = (
+    "t.id::text AS id, t.amount_minor, t.currency, t.transaction_type, "
+    "t.source, t.merchant_id::text AS merchant_id, "
+    "m.display_name AS merchant_display_name, "
+    "t.category_id::text AS category_id, c.key AS category_key, "
+    "t.occurred_on::text AS occurred_on, t.note, t.is_card_settlement, "
+    "t.created_at, t.updated_at "
+    "FROM transactions t "
+    "LEFT JOIN merchants m ON m.id = t.merchant_id "
+    "LEFT JOIN categories c ON c.id = t.category_id"
+)
+
+
+def _row_to_transaction_out(r) -> TransactionOut:
+    return TransactionOut(
+        id=r["id"],
+        amount_minor=r["amount_minor"],
+        currency=r["currency"],
+        transaction_type=r["transaction_type"],
+        source=r["source"],
+        merchant_id=r["merchant_id"],
+        merchant_display_name=r["merchant_display_name"],
+        category_id=r["category_id"],
+        category_key=r["category_key"],
+        occurred_on=r["occurred_on"],
+        note=r["note"],
+        is_card_settlement=r["is_card_settlement"],
+        created_at=_rfc3339(r["created_at"]),
+        updated_at=_rfc3339(r["updated_at"]),
+    )
+
+
 def _month_bounds(month: str) -> tuple[date, date]:
     """Return [start, end) dates for a `YYYY-MM` month, or raise 422."""
     parts = month.split("-")
@@ -295,20 +331,10 @@ async def list_transactions(
     # Fetch one extra row to detect whether a next page exists.
     params["lim"] = page_limit + 1
     sql = text(
-        f"""
-        SELECT t.id::text AS id, t.amount_minor, t.currency, t.transaction_type,
-               t.source, t.merchant_id::text AS merchant_id,
-               m.display_name AS merchant_display_name,
-               t.category_id::text AS category_id, c.key AS category_key,
-               t.occurred_on::text AS occurred_on, t.note, t.is_card_settlement,
-               t.created_at, t.updated_at
-        FROM transactions t
-        LEFT JOIN merchants m ON m.id = t.merchant_id
-        LEFT JOIN categories c ON c.id = t.category_id
-        WHERE {" AND ".join(where)}
-        ORDER BY t.occurred_on DESC, t.created_at DESC, t.id DESC
-        LIMIT :lim
-        """
+        f"SELECT {_TXN_SELECT} "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY t.occurred_on DESC, t.created_at DESC, t.id DESC "
+        "LIMIT :lim"
     )
 
     try:
@@ -327,25 +353,7 @@ async def list_transactions(
     has_more = len(rows) > page_limit
     rows = rows[:page_limit]
 
-    items = [
-        TransactionOut(
-            id=r["id"],
-            amount_minor=r["amount_minor"],
-            currency=r["currency"],
-            transaction_type=r["transaction_type"],
-            source=r["source"],
-            merchant_id=r["merchant_id"],
-            merchant_display_name=r["merchant_display_name"],
-            category_id=r["category_id"],
-            category_key=r["category_key"],
-            occurred_on=r["occurred_on"],
-            note=r["note"],
-            is_card_settlement=r["is_card_settlement"],
-            created_at=_rfc3339(r["created_at"]),
-            updated_at=_rfc3339(r["updated_at"]),
-        )
-        for r in rows
-    ]
+    items = [_row_to_transaction_out(r) for r in rows]
 
     next_cursor = None
     if has_more and rows:
@@ -363,3 +371,62 @@ async def list_transactions(
     )
 
     return TransactionListResponse(items=items, next_cursor=next_cursor)
+
+
+# =========================================================================== #
+# GET /transactions/{id} — single read, ownership-scoped (API_CONTRACT §9).
+# =========================================================================== #
+
+_SELECT_BY_ID = text(
+    f"SELECT {_TXN_SELECT} WHERE t.id = :id AND t.user_id = :user_id"
+)
+
+
+@router.get("/transactions/{transaction_id}", response_model=TransactionOut)
+async def get_transaction(
+    request: Request,
+    transaction_id: str,
+    principal: Principal = Depends(require_principal),
+) -> TransactionOut:
+    request_id = getattr(request.state, "request_id", "req_unknown")
+
+    # A non-UUID id cannot correspond to any row. Report 404 (never a format
+    # error) so the response stays generic and leaks nothing about existence.
+    try:
+        uuid.UUID(transaction_id)
+    except (ValueError, AttributeError, TypeError):
+        raise AppError(code="not_found") from None
+
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            row = (
+                await session.execute(
+                    _SELECT_BY_ID,
+                    {"id": transaction_id, "user_id": principal.user_id},
+                )
+            ).mappings().one_or_none()
+    except Exception:
+        log_event(
+            "get_transaction",
+            request_id=request_id,
+            endpoint="/api/v1/transactions/{id}",
+            status=503,
+        )
+        raise AppError(code="backend_unavailable") from None
+
+    # Missing OR owned by another principal -> identical generic 404 (no leak).
+    if row is None:
+        raise AppError(code="not_found")
+
+    txn = _row_to_transaction_out(row)
+    # Privacy-safe log: ids/status only — never amount, note, or merchant text.
+    log_event(
+        "get_transaction",
+        request_id=request_id,
+        endpoint="/api/v1/transactions/{id}",
+        status=200,
+        user_id=principal.user_id,
+        transaction_id=txn.id,
+    )
+    return txn
