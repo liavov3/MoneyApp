@@ -1,10 +1,10 @@
 """FastAPI application factory — Money App backend v0.0.1 (foundation slice).
 
 Mounts the API under /api/v1. Implemented so far: GET /api/v1/health,
-GET /api/v1/categories, and POST /api/v1/transactions/quick-add (amount-only
-subset) — all auth-required with a server-resolved principal. Remaining feature
-endpoints (merchant matching, categorize, home, recurring, list/edit/delete) are
-intentionally NOT implemented yet.
+GET /api/v1/categories, POST /api/v1/transactions/quick-add (amount-only
+subset), and GET /api/v1/transactions (list) — all auth-required with a
+server-resolved principal. Remaining feature endpoints (merchant matching,
+categorize, home, recurring, edit/delete) are intentionally NOT implemented yet.
 """
 
 from __future__ import annotations

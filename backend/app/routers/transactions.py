@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request, status
+import base64
+import binascii
+import json
+
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
@@ -186,3 +190,176 @@ async def quick_add(
     )
 
     return QuickAddResponse(transaction=txn)
+
+
+# =========================================================================== #
+# GET /transactions — list the principal's transactions (API_CONTRACT §9).
+# =========================================================================== #
+
+_DEFAULT_LIMIT = 50
+_MAX_LIMIT = 100
+
+
+class TransactionListResponse(BaseModel):
+    items: list[TransactionOut]
+    next_cursor: str | None = None
+
+
+def _month_bounds(month: str) -> tuple[date, date]:
+    """Return [start, end) dates for a `YYYY-MM` month, or raise 422."""
+    parts = month.split("-")
+    if len(parts) != 2 or len(parts[0]) != 4 or len(parts[1]) != 2:
+        raise _field_error("month", "invalid_month", "Use YYYY-MM.")
+    try:
+        year, mon = int(parts[0]), int(parts[1])
+        start = date(year, mon, 1)
+    except (ValueError, TypeError):
+        raise _field_error("month", "invalid_month", "Use YYYY-MM.") from None
+    end = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
+    return start, end
+
+
+def _encode_cursor(occurred_on: str, created_at: datetime, txn_id: str) -> str:
+    payload = json.dumps(
+        {"o": occurred_on, "c": created_at.isoformat(), "id": txn_id},
+        separators=(",", ":"),
+    )
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_cursor(cursor: str) -> tuple[date, datetime, str]:
+    """Decode an opaque cursor into typed (occurred_on, created_at, id) bounds.
+
+    Returns native date/datetime objects so the asyncpg driver binds them as
+    `date`/`timestamptz` (it rejects bare strings for those types).
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        data = json.loads(raw)
+        return (
+            date.fromisoformat(str(data["o"])),
+            datetime.fromisoformat(str(data["c"])),
+            str(data["id"]),
+        )
+    except (binascii.Error, ValueError, KeyError, TypeError):
+        raise _field_error("cursor", "invalid_cursor", "Invalid cursor.") from None
+
+
+@router.get("/transactions", response_model=TransactionListResponse)
+async def list_transactions(
+    request: Request,
+    principal: Principal = Depends(require_principal),
+    month: str | None = Query(default=None),
+    category_id: str | None = Query(default=None),
+    uncategorized: bool | None = Query(default=None),
+    limit: int = Query(default=_DEFAULT_LIMIT),
+    cursor: str | None = Query(default=None),
+) -> TransactionListResponse:
+    request_id = getattr(request.state, "request_id", "req_unknown")
+
+    # --- validate filters ---------------------------------------------------- #
+    if category_id is not None and uncategorized:
+        raise _field_error(
+            "uncategorized", "conflicting_filters",
+            "category_id and uncategorized are mutually exclusive.",
+        )
+
+    # clamp limit to [1, 100] (contract default 50, max 100).
+    page_limit = max(1, min(int(limit), _MAX_LIMIT))
+
+    # WHERE clause scoped to the server-resolved principal — never the client.
+    where = ["t.user_id = :user_id"]
+    params: dict = {"user_id": principal.user_id}
+
+    if month is not None:
+        start, end = _month_bounds(month)
+        where.append("t.occurred_on >= :m_start AND t.occurred_on < :m_end")
+        params["m_start"] = start
+        params["m_end"] = end
+
+    if uncategorized:
+        where.append("t.category_id IS NULL")
+    elif category_id is not None:
+        where.append("t.category_id = CAST(:category_id AS uuid)")
+        params["category_id"] = category_id
+
+    if cursor is not None:
+        c_o, c_c, c_id = _decode_cursor(cursor)
+        # Keyset: rows strictly "after" (older than) the cursor in DESC order.
+        where.append(
+            "(t.occurred_on, t.created_at, t.id) < "
+            "(CAST(:c_o AS date), CAST(:c_c AS timestamptz), CAST(:c_id AS uuid))"
+        )
+        params.update({"c_o": c_o, "c_c": c_c, "c_id": c_id})
+
+    # Fetch one extra row to detect whether a next page exists.
+    params["lim"] = page_limit + 1
+    sql = text(
+        f"""
+        SELECT t.id::text AS id, t.amount_minor, t.currency, t.transaction_type,
+               t.source, t.merchant_id::text AS merchant_id,
+               m.display_name AS merchant_display_name,
+               t.category_id::text AS category_id, c.key AS category_key,
+               t.occurred_on::text AS occurred_on, t.note, t.is_card_settlement,
+               t.created_at, t.updated_at
+        FROM transactions t
+        LEFT JOIN merchants m ON m.id = t.merchant_id
+        LEFT JOIN categories c ON c.id = t.category_id
+        WHERE {" AND ".join(where)}
+        ORDER BY t.occurred_on DESC, t.created_at DESC, t.id DESC
+        LIMIT :lim
+        """
+    )
+
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            rows = (await session.execute(sql, params)).mappings().all()
+    except Exception:
+        log_event(
+            "list_transactions",
+            request_id=request_id,
+            endpoint="/api/v1/transactions",
+            status=503,
+        )
+        raise AppError(code="backend_unavailable") from None
+
+    has_more = len(rows) > page_limit
+    rows = rows[:page_limit]
+
+    items = [
+        TransactionOut(
+            id=r["id"],
+            amount_minor=r["amount_minor"],
+            currency=r["currency"],
+            transaction_type=r["transaction_type"],
+            source=r["source"],
+            merchant_id=r["merchant_id"],
+            merchant_display_name=r["merchant_display_name"],
+            category_id=r["category_id"],
+            category_key=r["category_key"],
+            occurred_on=r["occurred_on"],
+            note=r["note"],
+            is_card_settlement=r["is_card_settlement"],
+            created_at=_rfc3339(r["created_at"]),
+            updated_at=_rfc3339(r["updated_at"]),
+        )
+        for r in rows
+    ]
+
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        next_cursor = _encode_cursor(last["occurred_on"], last["created_at"], last["id"])
+
+    # Privacy-safe log: row count only — never amount, note, or merchant text.
+    log_event(
+        "list_transactions",
+        request_id=request_id,
+        endpoint="/api/v1/transactions",
+        status=200,
+        user_id=principal.user_id,
+        row_count=len(items),
+    )
+
+    return TransactionListResponse(items=items, next_cursor=next_cursor)
