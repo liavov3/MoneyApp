@@ -1,0 +1,50 @@
+"""FastAPI application factory — Money App backend v0.0.1 (foundation slice).
+
+Mounts the API under /api/v1. Implemented so far: GET /api/v1/health and
+GET /api/v1/categories (auth-required, server-resolved principal). Remaining
+feature endpoints (quick-add, home, merchants, categorize, recurring) are
+intentionally NOT implemented yet.
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from app.config import get_settings
+from app.db import dispose_engine
+from app.errors import register_exception_handlers
+from app.logging_utils import configure_logging
+from app.middleware import RequestContextMiddleware
+from app.routers import categories, health
+
+API_V1_PREFIX = "/api/v1"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    yield
+    await dispose_engine()
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="Money App API",
+        version="0.0.1",
+        description="Manual-first personal finance backend (foundation slice).",
+        lifespan=lifespan,
+    )
+
+    app.add_middleware(RequestContextMiddleware)
+    register_exception_handlers(app)
+
+    app.include_router(health.router, prefix=API_V1_PREFIX, tags=["health"])
+    app.include_router(categories.router, prefix=API_V1_PREFIX, tags=["categories"])
+
+    return app
+
+
+app = create_app()

@@ -1,0 +1,32 @@
+# OPTIONAL local PostgreSQL (with pgvector) for running migrations and tests.
+# Not required: the default development/testing path is Neon (see README +
+# .env.example). Use this only if you prefer a local DB instead of Neon.
+# Usage:
+#   docker compose up -d
+#   # wait for healthy, then from backend/:
+#   alembic upgrade head
+#   pytest
+#
+# The pgvector/pgvector image ships the `vector` extension so the migration
+# `CREATE EXTENSION IF NOT EXISTS vector` succeeds. v0.0.1 installs the
+# extension but creates ZERO vector tables/rows.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: money_app_db
+    environment:
+      POSTGRES_USER: money
+      POSTGRES_PASSWORD: money
+      POSTGRES_DB: money_app
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U money -d money_app"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - money_app_pgdata:/var/lib/postgresql/data
+
+volumes:
+  money_app_pgdata:
