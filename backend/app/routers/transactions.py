@@ -20,7 +20,7 @@ import binascii
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
@@ -430,3 +430,66 @@ async def get_transaction(
         transaction_id=txn.id,
     )
     return txn
+
+
+# =========================================================================== #
+# DELETE /transactions/{id} — hard delete, ownership-scoped (API_CONTRACT §9).
+# =========================================================================== #
+
+# Scoped to the resolved principal; RETURNING lets us tell "deleted" from
+# "missing/not-owned" without a separate existence probe (no leak).
+_DELETE_BY_ID = text(
+    "DELETE FROM transactions WHERE id = :id AND user_id = :user_id "
+    "RETURNING id::text AS id"
+)
+
+
+@router.delete(
+    "/transactions/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_transaction(
+    request: Request,
+    transaction_id: str,
+    principal: Principal = Depends(require_principal),
+) -> Response:
+    request_id = getattr(request.state, "request_id", "req_unknown")
+
+    # A non-UUID id cannot correspond to any row -> generic 404 (no leak).
+    try:
+        uuid.UUID(transaction_id)
+    except (ValueError, AttributeError, TypeError):
+        raise AppError(code="not_found") from None
+
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            deleted = (
+                await session.execute(
+                    _DELETE_BY_ID,
+                    {"id": transaction_id, "user_id": principal.user_id},
+                )
+            ).mappings().one_or_none()
+            await session.commit()
+    except Exception:
+        log_event(
+            "delete_transaction",
+            request_id=request_id,
+            endpoint="/api/v1/transactions/{id}",
+            status=503,
+        )
+        raise AppError(code="backend_unavailable") from None
+
+    # Nothing deleted -> missing OR owned by another principal: identical 404.
+    if deleted is None:
+        raise AppError(code="not_found")
+
+    # Privacy-safe log: ids/status only — never amount, note, or merchant text.
+    log_event(
+        "delete_transaction",
+        request_id=request_id,
+        endpoint="/api/v1/transactions/{id}",
+        status=204,
+        user_id=principal.user_id,
+        transaction_id=deleted["id"],
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
