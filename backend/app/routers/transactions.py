@@ -28,6 +28,7 @@ from app.auth import Principal, require_principal
 from app.db import get_sessionmaker
 from app.errors import AppError
 from app.logging_utils import log_event
+from app.merchants import clean_raw, display_form, normalize_merchant_name
 from app.money import parse_amount_to_minor
 
 router = APIRouter()
@@ -51,6 +52,10 @@ class QuickAddRequest(BaseModel):
     # Optional explicit category (§8). Must be a visible consumer-layer category;
     # omitted/null -> uncategorized. merchant-driven suggestions are out of scope.
     category_id: str | None = None
+    # Optional typed merchant text (§8). Normalized-exact match reuses an existing
+    # merchant, else a new one is created for this user. The pre-resolved
+    # `merchant_id` path (recent chips) is deferred -> still dropped by extra=ignore.
+    merchant_input: str | None = None
 
 
 class TransactionOut(BaseModel):
@@ -106,16 +111,53 @@ _INSERT_SQL = text(
     """
     INSERT INTO transactions
         (user_id, amount_minor, currency, transaction_type, source,
-         occurred_on, note, category_id)
+         occurred_on, note, category_id, merchant_id, raw_merchant_input)
     VALUES
         (:user_id, :amount_minor, :currency, :transaction_type, 'manual',
-         :occurred_on, :note, CAST(:category_id AS uuid))
+         :occurred_on, :note, CAST(:category_id AS uuid),
+         CAST(:merchant_id AS uuid), :raw_merchant_input)
     RETURNING id::text AS id, amount_minor, currency, transaction_type, source,
               merchant_id::text AS merchant_id, category_id::text AS category_id,
               note, occurred_on::text AS occurred_on, is_card_settlement,
               created_at, updated_at
     """
 )
+
+
+# Normalized-exact resolve, else create (MERCHANT_NORMALIZATION_SPEC §7 `none`).
+# ON CONFLICT on the (user_id, normalized_merchant_name) unique key makes this
+# race-safe and idempotent: a repeat input reuses the same row (bumping
+# updated_at for recency) and keeps the FIRST display_name. No fuzzy, no
+# cross-script merge — different scripts produce different keys by construction.
+_MERCHANT_UPSERT = text(
+    """
+    INSERT INTO merchants (user_id, normalized_merchant_name, display_name)
+    VALUES (:user_id, :normalized, :display_name)
+    ON CONFLICT (user_id, normalized_merchant_name)
+    DO UPDATE SET updated_at = now()
+    RETURNING id::text AS id, display_name
+    """
+)
+
+
+async def _resolve_or_create_merchant(
+    session, raw: str, user_id: str
+) -> tuple[str, str] | None:
+    """Return (merchant_id, display_name) for typed text, or None if blank."""
+    normalized = normalize_merchant_name(raw)
+    if not normalized:  # whitespace/invisible-only -> treat as no merchant
+        return None
+    row = (
+        await session.execute(
+            _MERCHANT_UPSERT,
+            {
+                "user_id": user_id,  # server-resolved ONLY
+                "normalized": normalized,
+                "display_name": display_form(raw),
+            },
+        )
+    ).mappings().one()
+    return row["id"], row["display_name"]
 
 
 @router.post(
@@ -145,6 +187,7 @@ async def quick_add(
     # --- persist (save-first) ----------------------------------------------- #
     category_id = body.category_id  # validated below; None -> uncategorized
     category_key: str | None = None
+    merchant_display_name: str | None = None
     params = {
         "user_id": principal.user_id,  # server-resolved ONLY
         "amount_minor": amount_minor,
@@ -153,6 +196,8 @@ async def quick_add(
         "occurred_on": occurred_on,
         "note": body.note,
         "category_id": category_id,
+        "merchant_id": None,
+        "raw_merchant_input": None,
     }
     try:
         sessionmaker = get_sessionmaker()
@@ -163,6 +208,15 @@ async def quick_add(
                 category_key = await _validate_category(
                     session, category_id, principal.user_id
                 )
+            # Resolve/create the merchant for the server-resolved principal, and
+            # preserve the verbatim typed text as raw_merchant_input (audit; §4).
+            if body.merchant_input is not None:
+                resolved = await _resolve_or_create_merchant(
+                    session, body.merchant_input, principal.user_id
+                )
+                if resolved is not None:
+                    params["merchant_id"], merchant_display_name = resolved
+                    params["raw_merchant_input"] = clean_raw(body.merchant_input)
             row = (await session.execute(_INSERT_SQL, params)).mappings().one()
             await session.commit()
     except AppError:
@@ -184,7 +238,7 @@ async def quick_add(
         transaction_type=row["transaction_type"],
         source=row["source"],
         merchant_id=row["merchant_id"],
-        merchant_display_name=None,  # merchant resolution not in this slice
+        merchant_display_name=merchant_display_name,  # resolved/created merchant
         category_id=row["category_id"],
         category_key=category_key,  # joined display key for an explicit category
         occurred_on=row["occurred_on"],
