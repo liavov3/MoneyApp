@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 from app.auth import Principal, require_principal
+from app.category_rules import fetch_active_rules, resolve_suggestion
 from app.db import get_sessionmaker
 from app.errors import AppError
 from app.logging_utils import log_event
@@ -60,15 +61,13 @@ def _rfc3339(dt: datetime) -> str:
 
 
 # Principal-scoped; most-recent-first with id as a deterministic tiebreaker.
-# LEFT JOIN surfaces the merchant-default category suggestion (§9 lowest level);
-# higher levels (rules / recent-memory) are deferred to a later slice.
+# `normalized_merchant_name` feeds the §9 rule resolution; the LEFT JOIN carries
+# the merchant-default fallback. (recent-merchant memory is still deferred.)
 _SELECT_RECENT = text(
     """
-    SELECT m.id::text AS merchant_id, m.display_name,
-           m.default_category_id::text AS suggested_category_id,
-           c.key AS suggested_category_key,
-           CASE WHEN m.default_category_id IS NOT NULL
-                THEN 'merchant_default' END AS suggested_category_source,
+    SELECT m.id::text AS merchant_id, m.display_name, m.normalized_merchant_name,
+           m.default_category_id::text AS default_category_id,
+           c.key AS default_category_key,
            m.updated_at AS last_used_at
     FROM merchants m
     LEFT JOIN categories c ON c.id = m.default_category_id
@@ -113,6 +112,7 @@ async def recent_merchants(
                     {"user_id": principal.user_id, "limit": page_limit},
                 )
             ).mappings().all()
+            rules = await fetch_active_rules(session, principal.user_id)
     except Exception:
         log_event(
             "recent_merchants",
@@ -122,17 +122,24 @@ async def recent_merchants(
         )
         raise AppError(code="backend_unavailable") from None
 
-    items = [
-        RecentMerchantOut(
-            merchant_id=r["merchant_id"],
-            display_name=r["display_name"],
-            suggested_category_id=r["suggested_category_id"],
-            suggested_category_key=r["suggested_category_key"],
-            suggested_category_source=r["suggested_category_source"],
-            last_used_at=_rfc3339(r["last_used_at"]),
+    items = []
+    for r in rows:
+        cat_id, cat_key, source = resolve_suggestion(
+            rules, r["normalized_merchant_name"],
+            r["default_category_id"], r["default_category_key"],
         )
-        for r in rows
-    ]
+        items.append(
+            RecentMerchantOut(
+                merchant_id=r["merchant_id"],
+                display_name=r["display_name"],
+                suggested_category_id=cat_id,
+                suggested_category_key=cat_key,
+                # Preserve this endpoint's existing empty representation (null,
+                # not the "none" string) when nothing resolves.
+                suggested_category_source=None if source == "none" else source,
+                last_used_at=_rfc3339(r["last_used_at"]),
+            )
+        )
 
     # Privacy-safe log: row count only — never display_name or any merchant text.
     log_event(
@@ -248,6 +255,7 @@ async def merchant_suggestions(
                     _SELECT_ALIAS_MATCH, {"user_id": principal.user_id, "nq": nq}
                 )
             ).scalar_one_or_none()
+            rules = await fetch_active_rules(session, principal.user_id)
     except Exception:
         log_event(
             "merchant_suggestions",
@@ -281,21 +289,24 @@ async def merchant_suggestions(
         (r["merchant_id"] for r, lvl in ranked if lvl in _AUTO_SELECT), None
     )
 
-    items = [
-        SuggestionItemOut(
-            merchant_id=r["merchant_id"],
-            display_name=r["display_name"],
-            confidence=lvl,
-            requires_confirmation=(lvl == "contains"),  # never auto-merge a contains
-            matched_via="alias" if lvl == "alias_exact" else "merchant",
-            suggested_category_id=r["suggested_category_id"],
-            suggested_category_key=r["suggested_category_key"],
-            suggested_category_source=(
-                "merchant_default" if r["suggested_category_id"] else "none"
-            ),
+    items = []
+    for r, lvl in ranked[:page_limit]:
+        cat_id, cat_key, source = resolve_suggestion(
+            rules, r["normalized_merchant_name"],
+            r["suggested_category_id"], r["suggested_category_key"],
         )
-        for r, lvl in ranked[:page_limit]
-    ]
+        items.append(
+            SuggestionItemOut(
+                merchant_id=r["merchant_id"],
+                display_name=r["display_name"],
+                confidence=lvl,
+                requires_confirmation=(lvl == "contains"),  # never auto-merge a contains
+                matched_via="alias" if lvl == "alias_exact" else "merchant",
+                suggested_category_id=cat_id,
+                suggested_category_key=cat_key,
+                suggested_category_source=source,
+            )
+        )
 
     # Privacy-safe log: confidence enum + count only — never query or display_name.
     log_event(

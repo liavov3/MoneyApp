@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 from app.auth import Principal, require_principal
+from app.category_rules import fetch_active_rules, resolve_suggestion
 from app.db import get_sessionmaker
 from app.errors import AppError
 from app.logging_utils import log_event
@@ -188,6 +189,7 @@ async def quick_add(
     category_id = body.category_id  # validated below; None -> uncategorized
     category_key: str | None = None
     merchant_display_name: str | None = None
+    category_suggestion: dict | None = None
     params = {
         "user_id": principal.user_id,  # server-resolved ONLY
         "amount_minor": amount_minor,
@@ -217,6 +219,19 @@ async def quick_add(
                 if resolved is not None:
                     params["merchant_id"], merchant_display_name = resolved
                     params["raw_merchant_input"] = clean_raw(body.merchant_input)
+            # Category suggestion (SUGGEST-ONLY, §9 / contract step 3): when a
+            # merchant resolved and the client set no category, surface the rule
+            # suggestion in the response — the saved row stays as sent (never
+            # auto-applied).
+            if params["merchant_id"] is not None and category_id is None:
+                rules = await fetch_active_rules(session, principal.user_id)
+                s_id, s_key, s_src = resolve_suggestion(
+                    rules, normalize_merchant_name(body.merchant_input)
+                )
+                if s_id is not None:
+                    category_suggestion = {
+                        "category_id": s_id, "category_key": s_key, "source": s_src,
+                    }
             row = (await session.execute(_INSERT_SQL, params)).mappings().one()
             await session.commit()
     except AppError:
@@ -258,7 +273,7 @@ async def quick_add(
         transaction_id=txn.id,
     )
 
-    return QuickAddResponse(transaction=txn)
+    return QuickAddResponse(transaction=txn, category_suggestion=category_suggestion)
 
 
 # =========================================================================== #
