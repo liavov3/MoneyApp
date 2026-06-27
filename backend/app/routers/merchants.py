@@ -154,14 +154,25 @@ async def recent_merchants(
 # alias_exact / cross-script / fuzzy are deferred (no aliases or transliteration
 # in this slice) and so never resolve — they fall through to `none`.
 _CONFIDENCE_RANK = {
-    "exact": 5,
+    "exact": 6,
+    "alias_exact": 5,  # a user_confirmed alias is as trusted as exact (§7)
     "normalized_exact": 4,
     "recent_suggestion": 3,
     "contains": 2,
     "none": 0,
 }
-# Only these deterministic same-script identities may auto-select (§7).
-_AUTO_SELECT = {"exact", "normalized_exact"}
+# Deterministic identities that may auto-select (§7): exact, alias_exact,
+# normalized_exact. All same-script or user-confirmed — never fuzzy/cross-script.
+_AUTO_SELECT = {"exact", "alias_exact", "normalized_exact"}
+
+# A user_confirmed alias whose key equals the normalized query -> alias_exact for
+# its merchant (§7 level 2). UNIQUE(user_id, normalized_alias_key) -> at most one.
+# Only user_confirmed aliases are trusted enough to auto-select (spec §6).
+_SELECT_ALIAS_MATCH = text(
+    "SELECT merchant_id::text AS merchant_id FROM merchant_aliases "
+    "WHERE user_id = :user_id AND normalized_alias_key = :nq "
+    "AND source = 'user_confirmed'"
+)
 
 
 class SuggestionItemOut(BaseModel):
@@ -231,6 +242,12 @@ async def merchant_suggestions(
                     _SELECT_FOR_MATCH, {"user_id": principal.user_id}
                 )
             ).mappings().all()
+            # The merchant (if any) this query resolves to via a user_confirmed alias.
+            alias_exact_mid = (
+                await session.execute(
+                    _SELECT_ALIAS_MATCH, {"user_id": principal.user_id, "nq": nq}
+                )
+            ).scalar_one_or_none()
     except Exception:
         log_event(
             "merchant_suggestions",
@@ -247,6 +264,12 @@ async def merchant_suggestions(
         level = _match_confidence(
             nq, display_q, r["normalized_merchant_name"], r["display_name"]
         )
+        # A confirmed alias upgrades this merchant to alias_exact unless it is
+        # already the stronger `exact` (the user typed the canonical name).
+        if r["merchant_id"] == alias_exact_mid and (
+            level is None or _CONFIDENCE_RANK["alias_exact"] > _CONFIDENCE_RANK[level]
+        ):
+            level = "alias_exact"
         if level is not None:
             ranked.append((r, level))
 
@@ -264,7 +287,7 @@ async def merchant_suggestions(
             display_name=r["display_name"],
             confidence=lvl,
             requires_confirmation=(lvl == "contains"),  # never auto-merge a contains
-            matched_via="merchant",  # no aliases in this slice
+            matched_via="alias" if lvl == "alias_exact" else "merchant",
             suggested_category_id=r["suggested_category_id"],
             suggested_category_key=r["suggested_category_key"],
             suggested_category_source=(
