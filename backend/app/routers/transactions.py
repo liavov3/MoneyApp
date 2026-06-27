@@ -744,3 +744,209 @@ async def patch_transaction(
         transaction_id=txn.id,
     )
     return txn
+
+
+# =========================================================================== #
+# POST /transactions/{id}/categorize — set category + optional rule promotion
+# (API_CONTRACT §10; CATEGORY_TAXONOMY §9; update-not-stack).
+# =========================================================================== #
+
+_MATCH_TYPES = {"merchant_exact", "merchant_contains"}
+# Generic tokens too noisy to anchor a `contains` rule (MERCHANT_NORMALIZATION
+# SPEC §10/§12). A contains match_value must also clear a minimum length.
+_GENERIC_TOKENS = {
+    "market", "cafe", "kiosk", "makolet", "paybox", "bit", "transfer", "atm",
+    "other", "misc", "shop", "store",
+}
+_MIN_CONTAINS_LEN = 3
+
+# Update-not-stack: one rule per (user_id, match_type, match_value). A repeat
+# correction UPDATES category/source/updated_at on the single existing row.
+_RULE_UPSERT = text(
+    """
+    INSERT INTO category_rules
+        (user_id, match_type, match_value, category_id, source, priority, is_active)
+    VALUES
+        (:user_id, :match_type, :match_value, CAST(:category_id AS uuid),
+         'user_correction', 100, true)
+    ON CONFLICT (user_id, match_type, match_value)
+    DO UPDATE SET category_id = EXCLUDED.category_id, source = 'user_correction',
+                  is_active = true, updated_at = now()
+    RETURNING id::text AS id, match_type, category_id::text AS category_id,
+              source, priority, is_active, updated_at
+    """
+)
+
+
+class CategorizeRequest(BaseModel):
+    # extra="ignore": a forged user_id (or any unknown field) is never trusted.
+    model_config = ConfigDict(extra="ignore")
+
+    category_id: str  # required; consumer-layer (validated below)
+    promote_to_rule: bool = False
+    match_type: str = "merchant_exact"
+    apply_to_existing: bool = False
+
+
+class CategorizeResponse(BaseModel):
+    transaction: TransactionOut
+    rule: dict | None = None
+    applied_to_existing_count: int = 0
+
+
+@router.post("/transactions/{transaction_id}/categorize", response_model=CategorizeResponse)
+async def categorize_transaction(
+    request: Request,
+    transaction_id: str,
+    body: CategorizeRequest,
+    principal: Principal = Depends(require_principal),
+) -> CategorizeResponse:
+    request_id = getattr(request.state, "request_id", "req_unknown")
+
+    # Malformed id -> generic 404 (no leak), identical to GET/PATCH/DELETE.
+    try:
+        uuid.UUID(transaction_id)
+    except (ValueError, AttributeError, TypeError):
+        raise AppError(code="not_found") from None
+
+    if body.promote_to_rule and body.match_type not in _MATCH_TYPES:
+        raise _field_error("match_type", "invalid_enum", "Invalid match type.")
+
+    rule_out: dict | None = None
+    applied_count = 0
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            # Existence + ownership (missing/non-owned -> identical generic 404).
+            target = (
+                await session.execute(
+                    text(
+                        "SELECT merchant_id::text AS merchant_id FROM transactions "
+                        "WHERE id = :id AND user_id = :user_id"
+                    ),
+                    {"id": transaction_id, "user_id": principal.user_id},
+                )
+            ).mappings().one_or_none()
+            if target is None:
+                raise AppError(code="not_found")
+
+            # Category must be a visible consumer-layer category (raises 422).
+            category_key = await _validate_category(
+                session, body.category_id, principal.user_id
+            )
+
+            # Set the target transaction's category (only that field + updated_at).
+            await session.execute(
+                text(
+                    "UPDATE transactions SET category_id = CAST(:cat AS uuid), "
+                    "updated_at = now() WHERE id = :id AND user_id = :user_id"
+                ),
+                {"cat": body.category_id, "id": transaction_id, "user_id": principal.user_id},
+            )
+
+            # Optional rule promotion (user confirmation IS promote_to_rule:true).
+            if body.promote_to_rule:
+                merchant_id = target["merchant_id"]
+                if merchant_id is None:
+                    raise _field_error(
+                        "promote_to_rule", "unknown_merchant",
+                        "Add a merchant before saving a rule.",
+                    )
+                # match_value derives from the merchant's normalized name (the
+                # only fragment this endpoint exposes); contains is additionally
+                # guarded against generic/too-short tokens.
+                match_value = (
+                    await session.execute(
+                        text(
+                            "SELECT normalized_merchant_name FROM merchants "
+                            "WHERE id = CAST(:mid AS uuid) AND user_id = :user_id"
+                        ),
+                        {"mid": merchant_id, "user_id": principal.user_id},
+                    )
+                ).scalar_one()
+                if body.match_type == "merchant_contains" and (
+                    len(match_value) < _MIN_CONTAINS_LEN or match_value in _GENERIC_TOKENS
+                ):
+                    raise _field_error(
+                        "match_type", "generic_fragment",
+                        "That merchant is too generic for a rule.",
+                    )
+
+                rule_row = (
+                    await session.execute(
+                        _RULE_UPSERT,
+                        {
+                            "user_id": principal.user_id,
+                            "match_type": body.match_type,
+                            "match_value": match_value,  # stored, NEVER echoed/logged
+                            "category_id": body.category_id,
+                        },
+                    )
+                ).mappings().one()
+                rule_out = {
+                    "id": rule_row["id"],
+                    "match_type": rule_row["match_type"],
+                    "match_value_present": True,  # raw fragment never returned
+                    "category_id": rule_row["category_id"],
+                    "category_key": category_key,
+                    "source": rule_row["source"],
+                    "priority": rule_row["priority"],
+                    "is_active": rule_row["is_active"],
+                    "updated_at": _rfc3339(rule_row["updated_at"]),
+                }
+
+                # Going-forward by default; bulk rewrite of history is opt-in and
+                # scoped to the principal's OTHER transactions for this merchant.
+                if body.apply_to_existing:
+                    res = await session.execute(
+                        text(
+                            "UPDATE transactions SET category_id = CAST(:cat AS uuid), "
+                            "updated_at = now() WHERE user_id = :user_id "
+                            "AND merchant_id = CAST(:mid AS uuid) AND id <> :id"
+                        ),
+                        {
+                            "cat": body.category_id,
+                            "user_id": principal.user_id,
+                            "mid": merchant_id,
+                            "id": transaction_id,
+                        },
+                    )
+                    applied_count = res.rowcount
+
+            # Re-read the target through the shared projection (joined category_key).
+            row = (
+                await session.execute(
+                    _SELECT_BY_ID,
+                    {"id": transaction_id, "user_id": principal.user_id},
+                )
+            ).mappings().one()
+            await session.commit()
+    except AppError:
+        raise  # 404 / validation_error must not be masked as 503
+    except Exception:
+        log_event(
+            "categorize_transaction",
+            request_id=request_id,
+            endpoint="/api/v1/transactions/{id}/categorize",
+            status=503,
+        )
+        raise AppError(code="backend_unavailable") from None
+
+    txn = _row_to_transaction_out(row)
+    # Privacy-safe log: ids / enums / counts only — never category text, merchant
+    # text, the normalized key, or the rule match_value.
+    log_event(
+        "categorize_transaction",
+        request_id=request_id,
+        endpoint="/api/v1/transactions/{id}/categorize",
+        status=200,
+        user_id=principal.user_id,
+        transaction_id=txn.id,
+        category_id=body.category_id,
+        rule_id=rule_out["id"] if rule_out else None,
+        match_type=body.match_type if rule_out else None,
+        count=applied_count,
+    )
+    return CategorizeResponse(
+        transaction=txn, rule=rule_out, applied_to_existing_count=applied_count
+    )
