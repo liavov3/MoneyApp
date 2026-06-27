@@ -20,7 +20,7 @@ from app.db import dispose_engine
 from app.errors import register_exception_handlers
 from app.logging_utils import configure_logging
 from app.middleware import RequestContextMiddleware
-from app.routers import categories, health, transactions
+from app.routers import categories, health, merchants, transactions
 
 API_V1_PREFIX = "/api/v1"
 
@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix=API_V1_PREFIX, tags=["health"])
     app.include_router(categories.router, prefix=API_V1_PREFIX, tags=["categories"])
+    app.include_router(merchants.router, prefix=API_V1_PREFIX, tags=["merchants"])
     app.include_router(transactions.router, prefix=API_V1_PREFIX, tags=["transactions"])
 
     return app
