@@ -39,7 +39,7 @@ _MAX_FUTURE_DAYS = 1
 
 class QuickAddRequest(BaseModel):
     # Ignore any unknown/forbidden fields (e.g. a client-supplied user_id or the
-    # not-yet-implemented merchant_input/merchant_id/category_id) — never trusted.
+    # not-yet-implemented merchant_input/merchant_id) — never trusted.
     model_config = ConfigDict(extra="ignore")
 
     # JSON number or decimal string; parsed via Decimal (app/money.py).
@@ -48,6 +48,9 @@ class QuickAddRequest(BaseModel):
     occurred_on: str | None = None
     currency: str = "ILS"
     note: str | None = None
+    # Optional explicit category (§8). Must be a visible consumer-layer category;
+    # omitted/null -> uncategorized. merchant-driven suggestions are out of scope.
+    category_id: str | None = None
 
 
 class TransactionOut(BaseModel):
@@ -103,10 +106,10 @@ _INSERT_SQL = text(
     """
     INSERT INTO transactions
         (user_id, amount_minor, currency, transaction_type, source,
-         occurred_on, note)
+         occurred_on, note, category_id)
     VALUES
         (:user_id, :amount_minor, :currency, :transaction_type, 'manual',
-         :occurred_on, :note)
+         :occurred_on, :note, CAST(:category_id AS uuid))
     RETURNING id::text AS id, amount_minor, currency, transaction_type, source,
               merchant_id::text AS merchant_id, category_id::text AS category_id,
               note, occurred_on::text AS occurred_on, is_card_settlement,
@@ -140,6 +143,8 @@ async def quick_add(
     amount_minor = parse_amount_to_minor(body.amount, ttype)  # raises 422 on bad input
 
     # --- persist (save-first) ----------------------------------------------- #
+    category_id = body.category_id  # validated below; None -> uncategorized
+    category_key: str | None = None
     params = {
         "user_id": principal.user_id,  # server-resolved ONLY
         "amount_minor": amount_minor,
@@ -147,12 +152,21 @@ async def quick_add(
         "transaction_type": ttype,
         "occurred_on": occurred_on,
         "note": body.note,
+        "category_id": category_id,
     }
     try:
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
+            # Validate the explicit category (visible consumer-layer) before the
+            # insert; raises 422 validation_error which must NOT become 503.
+            if category_id is not None:
+                category_key = await _validate_category(
+                    session, category_id, principal.user_id
+                )
             row = (await session.execute(_INSERT_SQL, params)).mappings().one()
             await session.commit()
+    except AppError:
+        raise  # validation_error (bad category/amount) must surface as-is
     except Exception:
         # Never include exception text or the amount/note (privacy + DSN safety).
         log_event(
@@ -172,7 +186,7 @@ async def quick_add(
         merchant_id=row["merchant_id"],
         merchant_display_name=None,  # merchant resolution not in this slice
         category_id=row["category_id"],
-        category_key=None,  # category assignment not in this slice
+        category_key=category_key,  # joined display key for an explicit category
         occurred_on=row["occurred_on"],
         note=row["note"],
         is_card_settlement=row["is_card_settlement"],
@@ -524,12 +538,13 @@ class PatchRequest(BaseModel):
     category_id: str | None = None
 
 
-async def _validate_category(session, category_id: str, user_id: str) -> None:
-    """A patched category_id must be a VISIBLE CONSUMER-LAYER category (§9).
+async def _validate_category(session, category_id: str, user_id: str) -> str:
+    """Validate a category_id and return its display key (§8/§9).
 
-    Visible = system (user_id IS NULL) or owned by the principal. A
-    bank_movement category → `not_consumer_category`; unknown/non-visible →
-    `invalid_category`. Both surface as 422 validation_error (field code).
+    Must be a VISIBLE CONSUMER-LAYER category: visible = system (user_id IS NULL)
+    or owned by the principal. A bank_movement category → `not_consumer_category`;
+    unknown/non-visible → `invalid_category`. Both surface as 422
+    validation_error (field code). Returns the category `key` on success.
     """
     try:
         uuid.UUID(category_id)
@@ -538,7 +553,7 @@ async def _validate_category(session, category_id: str, user_id: str) -> None:
     row = (
         await session.execute(
             text(
-                "SELECT layer FROM categories "
+                "SELECT layer, key AS category_key FROM categories "
                 "WHERE id = CAST(:cid AS uuid) AND (user_id IS NULL OR user_id = :uid)"
             ),
             {"cid": category_id, "uid": user_id},
@@ -550,6 +565,7 @@ async def _validate_category(session, category_id: str, user_id: str) -> None:
         raise _field_error(
             "category_id", "not_consumer_category", "Choose a spending category."
         )
+    return row["category_key"]
 
 
 @router.patch("/transactions/{transaction_id}", response_model=TransactionOut)
