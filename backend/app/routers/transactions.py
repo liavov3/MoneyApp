@@ -493,3 +493,184 @@ async def delete_transaction(
         transaction_id=deleted["id"],
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# =========================================================================== #
+# PATCH /transactions/{id} — partial edit, ownership-scoped (API_CONTRACT §9).
+# =========================================================================== #
+
+# Editable in THIS slice: amount, transaction_type, occurred_on, note,
+# category_id (null clears). The contract's merchant_id/merchant_input require
+# merchant resolution (a later slice) — dropped via extra="ignore", same as
+# Quick Add, so a client sending them today is a no-op rather than an error.
+_EDITABLE_FIELDS = {"amount", "transaction_type", "occurred_on", "note", "category_id"}
+
+_SELECT_FOR_PATCH = text(
+    "SELECT transaction_type, amount_minor FROM transactions "
+    "WHERE id = :id AND user_id = :user_id"
+)
+
+
+class PatchRequest(BaseModel):
+    # extra="ignore": unknown/forbidden fields (client user_id, merchant_*) are
+    # never trusted. model_fields_set then tells provided-vs-omitted apart so a
+    # `null` (clear) is distinct from an absent field (leave unchanged).
+    model_config = ConfigDict(extra="ignore")
+
+    amount: str | int | float | None = None
+    transaction_type: str | None = None
+    occurred_on: str | None = None
+    note: str | None = None
+    category_id: str | None = None
+
+
+async def _validate_category(session, category_id: str, user_id: str) -> None:
+    """A patched category_id must be a VISIBLE CONSUMER-LAYER category (§9).
+
+    Visible = system (user_id IS NULL) or owned by the principal. A
+    bank_movement category → `not_consumer_category`; unknown/non-visible →
+    `invalid_category`. Both surface as 422 validation_error (field code).
+    """
+    try:
+        uuid.UUID(category_id)
+    except (ValueError, AttributeError, TypeError):
+        raise _field_error("category_id", "invalid_category", "Unknown category.") from None
+    row = (
+        await session.execute(
+            text(
+                "SELECT layer FROM categories "
+                "WHERE id = CAST(:cid AS uuid) AND (user_id IS NULL OR user_id = :uid)"
+            ),
+            {"cid": category_id, "uid": user_id},
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        raise _field_error("category_id", "invalid_category", "Unknown category.")
+    if row["layer"] != "consumer_spending":
+        raise _field_error(
+            "category_id", "not_consumer_category", "Choose a spending category."
+        )
+
+
+@router.patch("/transactions/{transaction_id}", response_model=TransactionOut)
+async def patch_transaction(
+    request: Request,
+    transaction_id: str,
+    body: PatchRequest,
+    principal: Principal = Depends(require_principal),
+) -> TransactionOut:
+    request_id = getattr(request.state, "request_id", "req_unknown")
+
+    # Malformed id -> generic 404 (no leak), identical to GET/DELETE.
+    try:
+        uuid.UUID(transaction_id)
+    except (ValueError, AttributeError, TypeError):
+        raise AppError(code="not_found") from None
+
+    # PATCH semantics: only fields actually present in the body are applied.
+    provided = body.model_fields_set & _EDITABLE_FIELDS
+    if not provided:
+        # "all optional; at least one required" (§9) -> 422 validation_error.
+        raise AppError(
+            code="validation_error",
+            field_errors=[
+                {"field": "body", "code": "empty_patch",
+                 "message": "Provide at least one field to update."}
+            ],
+        )
+
+    # --- DB-independent validation (nothing read/written yet) ---------------- #
+    new_type: str | None = None
+    if "transaction_type" in provided:
+        new_type = body.transaction_type
+        if new_type not in _VALID_TYPES:
+            raise _field_error("transaction_type", "invalid_enum", "Invalid transaction type.")
+
+    new_occurred_on: date | None = None
+    if "occurred_on" in provided:
+        if body.occurred_on is None:
+            raise _field_error("occurred_on", "invalid_date", "Enter a valid date.")
+        new_occurred_on = _resolve_occurred_on(body.occurred_on)
+
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            existing = (
+                await session.execute(
+                    _SELECT_FOR_PATCH,
+                    {"id": transaction_id, "user_id": principal.user_id},
+                )
+            ).mappings().one_or_none()
+            # Missing OR owned by another principal -> identical generic 404.
+            if existing is None:
+                raise AppError(code="not_found")
+
+            if "category_id" in provided and body.category_id is not None:
+                await _validate_category(session, body.category_id, principal.user_id)
+
+            # --- compute changed columns (validation may raise 422) ---------- #
+            updates: dict[str, object] = {}
+            effective_type = new_type if new_type is not None else existing["transaction_type"]
+            if "transaction_type" in provided:
+                updates["transaction_type"] = new_type
+            if "amount" in provided:
+                # Re-normalize against the (possibly updated) type; raises 422.
+                updates["amount_minor"] = parse_amount_to_minor(body.amount, effective_type)
+            elif "transaction_type" in provided:
+                # Type changed without a new amount: re-sign the existing
+                # magnitude to the new type (§9). expense -> negative.
+                magnitude = abs(existing["amount_minor"])
+                updates["amount_minor"] = -magnitude if new_type == "expense" else magnitude
+            if "occurred_on" in provided:
+                updates["occurred_on"] = new_occurred_on
+            if "note" in provided:
+                updates["note"] = body.note  # may be None (clear the note)
+            if "category_id" in provided:
+                updates["category_id"] = body.category_id  # validated; None clears
+
+            # --- build + run the UPDATE (column names are server-controlled) - #
+            set_parts = ["updated_at = now()"]
+            params: dict[str, object] = {"id": transaction_id, "user_id": principal.user_id}
+            for col, val in updates.items():
+                # uuid column needs an explicit cast for the asyncpg string bind.
+                placeholder = "CAST(:category_id AS uuid)" if col == "category_id" else f":{col}"
+                set_parts.append(f"{col} = {placeholder}")
+                params[col] = val
+            await session.execute(
+                text(
+                    f"UPDATE transactions SET {', '.join(set_parts)} "
+                    "WHERE id = :id AND user_id = :user_id"
+                ),
+                params,
+            )
+            # Re-read through the shared projection so the response shape is
+            # byte-identical to GET /transactions/{id} (joined category_key etc.).
+            row = (
+                await session.execute(
+                    _SELECT_BY_ID,
+                    {"id": transaction_id, "user_id": principal.user_id},
+                )
+            ).mappings().one()
+            await session.commit()
+    except AppError:
+        raise  # 404 / validation_error must not be masked as 503
+    except Exception:
+        log_event(
+            "patch_transaction",
+            request_id=request_id,
+            endpoint="/api/v1/transactions/{id}",
+            status=503,
+        )
+        raise AppError(code="backend_unavailable") from None
+
+    txn = _row_to_transaction_out(row)
+    # Privacy-safe log: ids/status only — never amount, note, or merchant text.
+    log_event(
+        "patch_transaction",
+        request_id=request_id,
+        endpoint="/api/v1/transactions/{id}",
+        status=200,
+        user_id=principal.user_id,
+        transaction_id=txn.id,
+    )
+    return txn
