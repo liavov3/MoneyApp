@@ -15,10 +15,11 @@ status / row count.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, Request, status
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 from app.auth import Principal, require_principal
@@ -31,6 +32,13 @@ router = APIRouter()
 
 _DEFAULT_LIMIT = 8
 _MAX_LIMIT = 20
+
+
+def _field_error(field: str, code: str, message: str) -> AppError:
+    return AppError(
+        code="validation_error",
+        field_errors=[{"field": field, "code": code, "message": message}],
+    )
 
 
 class RecentMerchantOut(BaseModel):
@@ -281,3 +289,181 @@ async def merchant_suggestions(
         auto_select_merchant_id=auto_select_merchant_id,
         items=items,
     )
+
+
+# =========================================================================== #
+# POST /merchants/{id}/aliases — user-confirmed alias / "Same as Golda?" (§11).
+# =========================================================================== #
+
+_SELECT_MERCHANT_OWNED = text(
+    "SELECT id FROM merchants WHERE id = CAST(:mid AS uuid) AND user_id = :user_id"
+)
+_SELECT_ALIAS_BY_KEY = text(
+    "SELECT id::text AS id, merchant_id::text AS merchant_id, source, confidence, "
+    "created_at, last_seen_at FROM merchant_aliases "
+    "WHERE user_id = :user_id AND normalized_alias_key = :nk"
+)
+_INSERT_ALIAS = text(
+    """
+    INSERT INTO merchant_aliases
+        (user_id, merchant_id, alias_text, normalized_alias_key, source, confidence)
+    VALUES
+        (:user_id, CAST(:mid AS uuid), :alias_text, :nk, 'user_confirmed', 'user_confirmed')
+    RETURNING id::text AS id, merchant_id::text AS merchant_id, source, confidence,
+              created_at, last_seen_at
+    """
+)
+_REPOINT_TXNS = text(
+    "UPDATE transactions SET merchant_id = CAST(:mid AS uuid) "
+    "WHERE merchant_id = CAST(:absorb AS uuid) AND user_id = :user_id"
+)
+_DELETE_MERCHANT = text(
+    "DELETE FROM merchants WHERE id = CAST(:absorb AS uuid) AND user_id = :user_id"
+)
+
+
+class AliasCreateRequest(BaseModel):
+    # extra="ignore": a forged user_id (or any unknown field) is never trusted.
+    model_config = ConfigDict(extra="ignore")
+
+    alias_text: str  # required; verbatim variant form (sensitive, never logged)
+    absorb_merchant_id: str | None = None
+
+
+@router.post("/merchants/{merchant_id}/aliases", status_code=status.HTTP_201_CREATED)
+async def create_alias(
+    request: Request,
+    merchant_id: str,
+    body: AliasCreateRequest,
+    principal: Principal = Depends(require_principal),
+) -> dict:
+    request_id = getattr(request.state, "request_id", "req_unknown")
+
+    # Malformed {id} -> generic 404 (no leak), same as the other resources.
+    try:
+        uuid.UUID(merchant_id)
+    except (ValueError, AttributeError, TypeError):
+        raise AppError(code="not_found") from None
+
+    # Normalize the variant; an empty key is not a valid alias.
+    nk = normalize_merchant_name(body.alias_text)
+    if not nk:
+        raise _field_error("alias_text", "empty_alias", "Enter a merchant name.")
+
+    absorb = body.absorb_merchant_id
+    if absorb is not None and absorb == merchant_id:
+        raise _field_error(
+            "absorb_merchant_id", "invalid_absorb", "Cannot absorb a merchant into itself."
+        )
+
+    try:
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            # Ownership of {id} (missing/not-owned -> identical generic 404).
+            owned = (
+                await session.execute(
+                    _SELECT_MERCHANT_OWNED,
+                    {"mid": merchant_id, "user_id": principal.user_id},
+                )
+            ).first()
+            if owned is None:
+                raise AppError(code="not_found")
+
+            # absorb target must be a DIFFERENT merchant owned by the principal.
+            if absorb is not None:
+                try:
+                    uuid.UUID(absorb)
+                except (ValueError, AttributeError, TypeError):
+                    raise _field_error(
+                        "absorb_merchant_id", "unknown_merchant", "Unknown merchant."
+                    ) from None
+                absorb_owned = (
+                    await session.execute(
+                        _SELECT_MERCHANT_OWNED,
+                        {"mid": absorb, "user_id": principal.user_id},
+                    )
+                ).first()
+                if absorb_owned is None:
+                    raise _field_error(
+                        "absorb_merchant_id", "unknown_merchant", "Unknown merchant."
+                    )
+
+            # Alias-key uniqueness (UNIQUE(user_id, normalized_alias_key)): the key
+            # resolves to exactly one merchant. Same merchant -> idempotent; a
+            # DIFFERENT merchant -> 409 (the client must pick the canonical one).
+            existing = (
+                await session.execute(
+                    _SELECT_ALIAS_BY_KEY, {"user_id": principal.user_id, "nk": nk}
+                )
+            ).mappings().one_or_none()
+            if existing is not None:
+                if existing["merchant_id"] != merchant_id:
+                    raise AppError(code="conflict")
+                alias_row = existing  # already points here -> idempotent
+            else:
+                alias_row = (
+                    await session.execute(
+                        _INSERT_ALIAS,
+                        {
+                            "user_id": principal.user_id,
+                            "mid": merchant_id,
+                            "alias_text": body.alias_text,  # stored, never logged
+                            "nk": nk,
+                        },
+                    )
+                ).mappings().one()
+
+            # Absorb a duplicate merchant: re-point its transactions to {id}, then
+            # drop it (cascade removes any of its own aliases — acceptable here,
+            # an absorbed merchant is typically a fresh Quick Add duplicate).
+            absorbed_count: int | None = None
+            if absorb is not None:
+                res = await session.execute(
+                    _REPOINT_TXNS,
+                    {"mid": merchant_id, "absorb": absorb, "user_id": principal.user_id},
+                )
+                absorbed_count = res.rowcount
+                await session.execute(
+                    _DELETE_MERCHANT, {"absorb": absorb, "user_id": principal.user_id}
+                )
+
+            await session.commit()
+    except AppError:
+        raise  # 404 / 409 / validation_error must surface as-is, never 503
+    except Exception:
+        log_event(
+            "create_alias",
+            request_id=request_id,
+            endpoint="/api/v1/merchants/{id}/aliases",
+            status=503,
+        )
+        raise AppError(code="backend_unavailable") from None
+
+    last_seen = alias_row["last_seen_at"]
+    result: dict = {
+        "alias": {
+            "id": alias_row["id"],
+            "merchant_id": alias_row["merchant_id"],
+            "source": alias_row["source"],
+            "confidence": alias_row["confidence"],
+            "created_at": _rfc3339(alias_row["created_at"]),
+            "last_seen_at": _rfc3339(last_seen) if last_seen else None,
+        }
+    }
+    # Present ONLY when a merchant was absorbed (contract §11).
+    if absorb is not None:
+        result["absorbed_merchant_id"] = absorb
+        result["repointed_transaction_count"] = absorbed_count
+
+    # Privacy-safe log: ids/counts only — never alias_text or the normalized key.
+    log_event(
+        "create_alias",
+        request_id=request_id,
+        endpoint="/api/v1/merchants/{id}/aliases",
+        status=201,
+        user_id=principal.user_id,
+        merchant_id=merchant_id,
+        alias_id=result["alias"]["id"],
+        count=absorbed_count if absorb is not None else 0,
+    )
+    return result
