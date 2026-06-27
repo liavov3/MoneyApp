@@ -32,6 +32,8 @@ Thumbs.db
 
 # Local agent state (machine-specific; keep shared .claude/settings.json + agents/)
 .claude/settings.local.json
+# Codex CLI machine/tool state (per-machine agent definitions; AGENTS.md is tracked)
+.codex/
 
 # Logs / local data
 *.log
