@@ -25,7 +25,11 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 from app.auth import Principal, require_principal
-from app.category_rules import fetch_active_rules, resolve_suggestion
+from app.category_rules import (
+    fetch_active_rules,
+    fetch_recent_memory,
+    resolve_suggestion,
+)
 from app.db import get_sessionmaker
 from app.errors import AppError
 from app.logging_utils import log_event
@@ -225,8 +229,10 @@ async def quick_add(
             # auto-applied).
             if params["merchant_id"] is not None and category_id is None:
                 rules = await fetch_active_rules(session, principal.user_id)
+                memory = await fetch_recent_memory(session, principal.user_id)
                 s_id, s_key, s_src = resolve_suggestion(
-                    rules, normalize_merchant_name(body.merchant_input)
+                    rules, normalize_merchant_name(body.merchant_input),
+                    memory=memory.get(params["merchant_id"]),
                 )
                 if s_id is not None:
                     category_suggestion = {

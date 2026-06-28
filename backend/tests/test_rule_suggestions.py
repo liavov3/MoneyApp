@@ -128,6 +128,33 @@ async def _set_default(merchant_id: str, category_id: str) -> None:
         await s.commit()
 
 
+async def _bank_category() -> str:
+    async with get_sessionmaker()() as s:
+        return (
+            await s.execute(
+                text(
+                    "SELECT id::text FROM categories "
+                    "WHERE layer = 'bank_movement' AND user_id IS NULL LIMIT 1"
+                )
+            )
+        ).scalar_one()
+
+
+async def _seed_categorized_txn(uid: str, merchant_id: str, category_id: str) -> None:
+    async with get_sessionmaker()() as s:
+        await s.execute(
+            text(
+                "INSERT INTO transactions "
+                "(user_id, amount_minor, currency, transaction_type, source, "
+                " merchant_id, category_id) "
+                "VALUES (:u, -500, 'ILS', 'expense', 'manual', "
+                " CAST(:m AS uuid), CAST(:c AS uuid))"
+            ),
+            {"u": uid, "m": merchant_id, "c": category_id},
+        )
+        await s.commit()
+
+
 async def _txn_category(txn_id: str) -> str | None:
     async with get_sessionmaker()() as s:
         return (
@@ -257,8 +284,9 @@ async def test_inactive_rule_ignored(principal, migrated: None) -> None:
     token, uid = principal
     await _ensure_user(uid)
     eating = await _category("eating_out")
-    merchant = await _promote_wolt(token, eating)
-    await _deactivate_rules(uid)
+    # An UNcategorized Wolt txn + an inactive rule -> no rule, no memory.
+    _, merchant = await _add_wolt(token)
+    await _seed_rule(uid, "wolt", eating, is_active=False)
 
     item = _item_for((await _suggest(token, "Wolt")).json(), merchant)
     assert item["suggested_category_id"] is None
@@ -396,3 +424,85 @@ async def test_no_match_value_in_logs(principal, migrated: None) -> None:
         rendered = r.getMessage() + " " + " ".join(str(v) for v in (r.args or ()))
         assert secret not in rendered             # merchant text / match_value
         assert secret.casefold() not in rendered  # normalized key
+
+
+# --------------------------------------------------------------------------- #
+# Recent-merchant memory (§9 level 5).
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_recent_memory_used_when_no_rule(principal, migrated: None) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    eating = await _category("eating_out")
+    txn_id, merchant = await _add_wolt(token)
+    await _categorize(token, txn_id, {"category_id": eating})  # categorize only, NO rule
+
+    item = _item_for((await _suggest(token, "Wolt")).json(), merchant)
+    assert item["suggested_category_id"] == eating
+    assert item["suggested_category_source"] == "recent_memory"
+
+
+@pytest.mark.asyncio
+async def test_recent_memory_most_recent_wins(principal, migrated: None) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    eating = await _category("eating_out")
+    shopping = await _category("shopping")
+    # older categorized txn -> eating_out
+    older = (
+        await _quick_add(
+            token, {"amount": "5.00", "merchant_input": "Wolt", "occurred_on": "2026-06-20"}
+        )
+    ).json()["transaction"]
+    await _categorize(token, older["id"], {"category_id": eating})
+    # newer categorized txn (default today) -> shopping
+    newer_id, merchant = await _add_wolt(token)
+    await _categorize(token, newer_id, {"category_id": shopping})
+
+    item = _item_for((await _suggest(token, "Wolt")).json(), merchant)
+    assert item["suggested_category_id"] == shopping  # recency leads
+
+
+@pytest.mark.asyncio
+async def test_rule_beats_recent_memory(principal, migrated: None) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    eating = await _category("eating_out")
+    shopping = await _category("shopping")
+    merchant = await _promote_wolt(token, eating)            # rule -> eating_out
+    newer_id, _ = await _add_wolt(token)
+    await _categorize(token, newer_id, {"category_id": shopping})  # newer memory -> shopping
+
+    item = _item_for((await _suggest(token, "Wolt")).json(), merchant)
+    assert item["suggested_category_id"] == eating  # rule outranks memory
+    assert item["suggested_category_source"] == "user_correction_merchant_exact"
+
+
+@pytest.mark.asyncio
+async def test_recent_memory_excludes_bank_movement(principal, migrated: None) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    bank = await _bank_category()
+    merchant = await _seed_merchant(uid, "wolt", "Wolt")
+    await _seed_categorized_txn(uid, merchant, bank)  # a bank-categorized row
+
+    item = _item_for((await _suggest(token, "Wolt")).json(), merchant)
+    # bank_movement is never suggested in Quick Add (§9) -> no memory.
+    assert item["suggested_category_id"] is None
+    assert item["suggested_category_source"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_quick_add_uses_recent_memory(principal, migrated: None) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    eating = await _category("eating_out")
+    txn_id, _ = await _add_wolt(token)
+    await _categorize(token, txn_id, {"category_id": eating})  # categorize only
+
+    resp = (await _quick_add(token, {"amount": "8.00", "merchant_input": "Wolt"})).json()
+    sugg = resp["category_suggestion"]
+    assert sugg is not None
+    assert sugg["category_id"] == eating
+    assert sugg["source"] == "recent_memory"
+    assert resp["transaction"]["category_id"] is None  # suggest-only

@@ -23,7 +23,11 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 from app.auth import Principal, require_principal
-from app.category_rules import fetch_active_rules, resolve_suggestion
+from app.category_rules import (
+    fetch_active_rules,
+    fetch_recent_memory,
+    resolve_suggestion,
+)
 from app.db import get_sessionmaker
 from app.errors import AppError
 from app.logging_utils import log_event
@@ -113,6 +117,7 @@ async def recent_merchants(
                 )
             ).mappings().all()
             rules = await fetch_active_rules(session, principal.user_id)
+            memory = await fetch_recent_memory(session, principal.user_id)
     except Exception:
         log_event(
             "recent_merchants",
@@ -124,9 +129,13 @@ async def recent_merchants(
 
     items = []
     for r in rows:
+        default = (
+            (r["default_category_id"], r["default_category_key"])
+            if r["default_category_id"] is not None else None
+        )
         cat_id, cat_key, source = resolve_suggestion(
             rules, r["normalized_merchant_name"],
-            r["default_category_id"], r["default_category_key"],
+            memory=memory.get(r["merchant_id"]), default=default,
         )
         items.append(
             RecentMerchantOut(
@@ -256,6 +265,7 @@ async def merchant_suggestions(
                 )
             ).scalar_one_or_none()
             rules = await fetch_active_rules(session, principal.user_id)
+            memory = await fetch_recent_memory(session, principal.user_id)
     except Exception:
         log_event(
             "merchant_suggestions",
@@ -291,9 +301,13 @@ async def merchant_suggestions(
 
     items = []
     for r, lvl in ranked[:page_limit]:
+        default = (
+            (r["suggested_category_id"], r["suggested_category_key"])
+            if r["suggested_category_id"] is not None else None
+        )
         cat_id, cat_key, source = resolve_suggestion(
             rules, r["normalized_merchant_name"],
-            r["suggested_category_id"], r["suggested_category_key"],
+            memory=memory.get(r["merchant_id"]), default=default,
         )
         items.append(
             SuggestionItemOut(
