@@ -16,10 +16,12 @@ backend/
     middleware.py    # request_id + safe access log
     models.py        # SQLAlchemy models = Alembic metadata target
     money.py         # Decimal-only amount -> signed agorot (API_CONTRACT §14)
+    merchants.py     # merchant text normalization (MERCHANT_NORMALIZATION_SPEC §4)
+    category_rules.py# §9 category-suggestion ladder (rules > recent-memory > default)
     auth.py          # server-resolved dev principal (Bearer token -> user_id)
     seed_data.py     # canonical 22 categories
     main.py          # FastAPI app, mounted at /api/v1
-    routers/         # health.py, categories.py, transactions.py
+    routers/         # health.py, categories.py, merchants.py, transactions.py
   migrations/versions/   # 0001 schema, 0002 categories, 0003 dev user
   tests/                 # pytest (async); DB tests skip if no DB reachable
   .env                   # LOCAL secrets — gitignored, never commit
@@ -72,6 +74,16 @@ docs/                    # FROZEN specs (see below)
   amount, note, raw input, merchant text, email, or tokens.
 - **asyncpg gotcha:** bind `date`/`datetime`/`uuid` params as native Python
   objects (not strings) under casts; the driver rejects bare strings for those.
+- **Merchant matching (MERCHANT_NORMALIZATION_SPEC §4/§7):** normalize via
+  `app/merchants.normalize_merchant_name`; auto-select ONLY at exact /
+  normalized_exact / alias_exact (deterministic same-script + user-confirmed
+  aliases) — never fuzzy, never silent cross-script merge. Merchant text, the
+  normalized key, and rule `match_value` are sensitive — never logged/echoed.
+- **Category suggestions (§9 ladder):** `app/category_rules.resolve_suggestion`
+  resolves user_correction rules (merchant_exact > merchant_contains) >
+  recent-merchant memory (last consumer category used) > merchant default >
+  none. Rules are **update-not-stack** and **suggest-only** in Quick Add (never
+  auto-applied to the saved row). bank_movement is never suggested.
 - **Tests:** use a fresh ephemeral principal per test (override `DEV_BEARER_TOKEN`
   + `DEV_USER_ID` via env, `get_settings.cache_clear()`) for isolation, and the
   autouse `_fresh_global_engine` fixture (the global engine is per-event-loop).
@@ -80,14 +92,35 @@ docs/                    # FROZEN specs (see below)
 
 - `GET /health`
 - `GET /categories` — 22 seeded system categories
-- `POST /transactions/quick-add` — amount-only manual create (201)
+- `POST /transactions/quick-add` — manual create (201); `amount` (required) +
+  optional `category_id` (consumer-layer) + `merchant_input` (normalized,
+  match-or-create). Returns `category_suggestion` from the §9 ladder
+  (suggest-only). merchant `merchant_id`/recent-chip path still deferred.
 - `GET /transactions` — list; `month`/`category_id`/`uncategorized` filters;
   keyset cursor (`occurred_on,created_at,id` DESC); `{items, next_cursor}`
 - `GET /transactions/{id}` — single read (404 if missing/non-owned)
+- `PATCH /transactions/{id}` — partial edit (amount/transaction_type/
+  occurred_on/note/category_id; `category_id:null` clears)
 - `DELETE /transactions/{id}` — hard delete, 204 (404 if missing/non-owned)
+- `POST /transactions/{id}/categorize` — set category + optional
+  `promote_to_rule` (UPSERT category_rules, update-not-stack,
+  `source=user_correction`); `apply_to_existing` (default false) bulk-recategorizes
+  the principal's other txns for that merchant. `match_value` never echoed.
+- `GET /merchants/recent` — recent chips (`updated_at DESC`, limit 8/max 20),
+  `suggested_category_*` via the §9 ladder
+- `GET /merchants/suggestions?query=` — typed autocomplete + confidence ladder
+  (exact/normalized_exact/alias_exact auto-select; recent_suggestion/contains
+  suggest); per-item `suggested_category_*` via the §9 ladder
+- `POST /merchants/{id}/aliases` — user-confirmed alias (only cross-script link
+  path); optional `absorb_merchant_id` re-points txns + deletes the duplicate;
+  key already pointing elsewhere → 409
 
-NOT yet implemented: `PATCH /transactions/{id}`, merchant resolution/aliases,
-category rules, recurring templates, Home, UI, production auth.
+Category-rule suggestions are wired into quick-add, `/merchants/recent`, and
+`/merchants/suggestions` via the §9 ladder (incl. recent-merchant memory).
+
+NOT yet implemented: `GET /home` (dashboard), `rule_prompt.offer` in quick-add
+("Always categorize…?"), `POST /category-rules` + `PATCH/DELETE /category-rules`,
+recurring templates, bank/card import, UI/mobile, production auth.
 
 ## Frozen docs (do NOT change without explicit instruction)
 
