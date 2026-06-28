@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "MoneySaver",
+    "slug": "moneysaver-mobile",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": false,
+    "splash": {
+      "backgroundColor": "#0E1116",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": { "supportsTablet": true },
+    "android": {
+      "adaptiveIcon": { "backgroundColor": "#0E1116" }
+    },
+    "web": { "bundler": "metro" }
+  }
+}
