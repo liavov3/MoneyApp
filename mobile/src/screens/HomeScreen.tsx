@@ -1,209 +1,251 @@
-// Home Dashboard (read-only). Renders real GET /home data. Actual spend
-// (transactions) and planned commitments (recurring templates) are rendered as
-// separate, differently-tinted sections — never summed (API_CONTRACT §13).
-// Hebrew category labels come from GET /categories (label_he); /home only
-// carries label_en / category_key.
+import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
-import { ApiError, getCategories, getHome } from '../api';
-import { AppText, Button, Card, Loading, SectionTitle } from '../components/ui';
-import { formatAmount, formatMonth, formatShortDate } from '../format';
-import { colors, font, spacing } from '../theme';
-import type { CategoryTotal, HomeResponse, RecentTxn, UpcomingCommitment } from '../types';
+import { getHome } from '../api';
+import { categoryMeta } from '../categories';
+import { AppText, Card, EmptyState, ErrorState, Screen, Skeleton } from '../components/ui';
+import { formatAmount, formatMonthLabel } from '../format';
+import { colors, font, radius, spacing, weight } from '../theme';
+import type { HomeResponse } from '../types';
+import { useCategories } from '../useCategories';
 
-type LabelMap = Record<string, string>;
-
-export default function HomeScreen({ onAuthExpired }: { onAuthExpired: () => void }) {
+export function HomeScreen({
+  dataVersion,
+  onQuickAdd,
+  onOpenSettings,
+}: {
+  dataVersion: number;
+  onQuickAdd: () => void;
+  onOpenSettings: () => void;
+}) {
   const [data, setData] = useState<HomeResponse | null>(null);
-  const [labels, setLabels] = useState<LabelMap>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
+  const { labelOf } = useCategories();
 
   const load = useCallback(async () => {
     setError(false);
     try {
-      const [home, cats] = await Promise.all([getHome(), getCategories()]);
-      const map: LabelMap = {};
-      for (const c of cats.items) {
-        if (c.key) map[c.key] = c.label_he ?? c.label_en;
-      }
-      setData(home);
-      setLabels(map);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        onAuthExpired();
-        return;
-      }
+      setData(await getHome());
+    } catch {
       setError(true);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [onAuthExpired]);
+  }, []);
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, dataVersion]);
 
-  const catLabel = (key: string | null, fallback?: string) =>
-    (key && labels[key]) || fallback || 'ללא קטגוריה';
-
-  if (loading) return <Loading label="טוען…" />;
-
-  if (error || !data) {
-    return (
-      <View style={styles.center}>
-        <AppText size={font.title} style={{ marginBottom: spacing.lg, textAlign: 'center' }}>
-          לא הצלחנו לטעון את הנתונים
+  const header = (
+    <View style={styles.header}>
+      <View>
+        <AppText size={font.h1} weight={weight.bold}>
+          בית
         </AppText>
-        <Button title="נסה שוב" onPress={load} />
+        {data ? (
+          <AppText size={font.caption} color={colors.textMuted}>
+            {formatMonthLabel(data.month)}
+          </AppText>
+        ) : null}
       </View>
+      <Pressable onPress={onOpenSettings} hitSlop={10} style={styles.gear}>
+        <Ionicons name="settings-outline" size={22} color={colors.textSecondary} />
+      </Pressable>
+    </View>
+  );
+
+  let body: React.ReactNode;
+  if (loading) {
+    body = (
+      <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
+        <Skeleton height={140} style={{ borderRadius: radius.card }} />
+        <Skeleton height={90} style={{ borderRadius: radius.card }} />
+        <Skeleton height={200} style={{ borderRadius: radius.card }} />
+      </View>
+    );
+  } else if (error || !data) {
+    body = <ErrorState onRetry={load} />;
+  } else {
+    const isEmpty =
+      data.spent_so_far_minor === 0 &&
+      data.recent_transactions.length === 0 &&
+      data.upcoming_commitments.length === 0;
+    const topCats = data.category_totals.slice(0, 4);
+    const maxCat = Math.max(1, ...topCats.map((c) => c.total_minor));
+
+    body = (
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              load();
+            }}
+            tintColor={colors.accent}
+          />
+        }
+      >
+        {/* Hero: actual spend this month */}
+        <Card style={styles.hero}>
+          <AppText size={font.caption} color={colors.textSecondary}>
+            הוצאות החודש
+          </AppText>
+          <AppText size={font.display} weight={weight.bold} style={{ marginTop: spacing.xs }}>
+            {formatAmount(data.spent_so_far_minor, data.currency)}
+          </AppText>
+          <View style={styles.heroMetaRow}>
+            <View style={styles.metaPill}>
+              <Ionicons name="pricetags-outline" size={13} color={colors.textSecondary} />
+              <AppText size={font.caption} color={colors.textSecondary}>
+                {data.uncategorized_count > 0
+                  ? `${data.uncategorized_count} ללא קטגוריה`
+                  : 'הכול מקוטלג'}
+              </AppText>
+            </View>
+            <AppText size={font.caption} color={colors.textMuted}>
+              אין יעד חודשי מוגדר
+            </AppText>
+          </View>
+        </Card>
+
+        {isEmpty ? (
+          <View style={{ marginTop: spacing.xxl }}>
+            <EmptyState
+              icon="wallet-outline"
+              title="עדיין לא נרשמו הוצאות החודש"
+              subtitle="הוסף את ההוצאה הראשונה שלך — לוקח פחות מחמש שניות."
+              action={{ label: 'הוספת הוצאה', onPress: onQuickAdd }}
+            />
+          </View>
+        ) : null}
+
+        {topCats.length > 0 ? (
+          <Card style={{ marginTop: spacing.md }}>
+            <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.md }}>
+              לפי קטגוריות
+            </AppText>
+            {topCats.map((c) => {
+              const meta = categoryMeta(c.category_key);
+              return (
+                <View key={c.category_id} style={{ marginBottom: spacing.md }}>
+                  <View style={styles.rowBetween}>
+                    <View style={styles.rowStart}>
+                      <Ionicons name={meta.icon} size={16} color={meta.color} />
+                      <AppText>{labelOf(c.category_key)}</AppText>
+                    </View>
+                    <AppText weight={weight.medium}>{formatAmount(c.total_minor, data.currency)}</AppText>
+                  </View>
+                  <View style={styles.track}>
+                    <View
+                      style={[
+                        styles.bar,
+                        { width: `${(c.total_minor / maxCat) * 100}%`, backgroundColor: meta.color },
+                      ]}
+                    />
+                  </View>
+                </View>
+              );
+            })}
+          </Card>
+        ) : null}
+
+        {data.committed_amount_minor > 0 || data.upcoming_commitments.length > 0 ? (
+          <Card variant="planned" style={{ marginTop: spacing.md }}>
+            <View style={styles.rowBetween}>
+              <AppText size={font.caption} color={colors.textSecondary}>
+                הוצאות קבועות · מתוכנן
+              </AppText>
+              <Ionicons name="repeat" size={16} color={colors.textSecondary} />
+            </View>
+            <AppText size={font.h1} weight={weight.bold} style={{ marginTop: spacing.xs }}>
+              {formatAmount(data.committed_amount_minor, data.currency)}
+            </AppText>
+            {data.upcoming_commitments.slice(0, 3).map((u) => (
+              <View key={u.template_id} style={[styles.rowBetween, { marginTop: spacing.sm }]}>
+                <AppText size={font.caption} color={colors.textSecondary}>
+                  {labelOf(u.category_key)}
+                </AppText>
+                <AppText size={font.caption}>{formatAmount(u.amount_minor, data.currency)}</AppText>
+              </View>
+            ))}
+          </Card>
+        ) : null}
+
+        {data.recent_transactions.length > 0 ? (
+          <Card style={{ marginTop: spacing.md, paddingVertical: spacing.sm }}>
+            <AppText size={font.caption} color={colors.textSecondary} style={{ marginVertical: spacing.sm }}>
+              עסקאות אחרונות
+            </AppText>
+            {data.recent_transactions.map((t, i) => {
+              const meta = categoryMeta(t.category_key);
+              const title = t.merchant_display_name ?? labelOf(t.category_key);
+              return (
+                <View key={t.id}>
+                  {i > 0 ? <View style={styles.divider} /> : null}
+                  <View style={styles.recentRow}>
+                    <View style={[styles.recentIcon, { backgroundColor: meta.color + '26' }]}>
+                      <Ionicons name={meta.icon} size={18} color={meta.color} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <AppText weight={weight.medium} numberOfLines={1}>
+                        {title}
+                      </AppText>
+                      {t.is_uncategorized ? (
+                        <AppText size={font.caption} color={colors.textMuted}>
+                          לא מקוטלג
+                        </AppText>
+                      ) : null}
+                    </View>
+                    <AppText weight={weight.semibold}>{formatAmount(t.amount_minor, t.currency)}</AppText>
+                  </View>
+                </View>
+              );
+            })}
+          </Card>
+        ) : null}
+      </ScrollView>
     );
   }
 
-  const isEmpty =
-    data.spent_so_far_minor === 0 &&
-    data.recent_transactions.length === 0 &&
-    data.upcoming_commitments.length === 0;
-  const maxCat = Math.max(1, ...data.category_totals.map((c) => c.total_minor));
-
   return (
-    <ScrollView
-      style={{ backgroundColor: colors.bg }}
-      contentContainerStyle={styles.content}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={() => {
-            setRefreshing(true);
-            load();
-          }}
-          tintColor={colors.accent}
-        />
-      }
-    >
-      {/* Actual spend headline */}
-      <Card>
-        <SectionTitle>הוצאות החודש · {formatMonth(data.month)}</SectionTitle>
-        <AppText size={font.display} weight="700">
-          {formatAmount(data.spent_so_far_minor, data.currency)}
-        </AppText>
-        {data.uncategorized_count > 0 ? (
-          <AppText color={colors.textSecondary} size={font.caption} style={{ marginTop: spacing.sm }}>
-            {data.uncategorized_count} ללא קטגוריה
-          </AppText>
-        ) : null}
-      </Card>
-
-      {isEmpty ? (
-        <Card>
-          <AppText color={colors.textSecondary} style={{ textAlign: 'center' }}>
-            עדיין לא נרשמו הוצאות החודש
-          </AppText>
-        </Card>
-      ) : null}
-
-      {/* Top category */}
-      {data.top_category ? (
-        <Card>
-          <SectionTitle>קטגוריה מובילה</SectionTitle>
-          <View style={styles.row}>
-            <AppText weight="600">
-              {catLabel(data.top_category.category_key, data.top_category.label_en)}
-            </AppText>
-            <AppText weight="600">{formatAmount(data.top_category.total_minor, data.currency)}</AppText>
-          </View>
-        </Card>
-      ) : null}
-
-      {/* Category breakdown (actual only) */}
-      {data.category_totals.length > 0 ? (
-        <Card>
-          <SectionTitle>לפי קטגוריות</SectionTitle>
-          {data.category_totals.map((c: CategoryTotal) => (
-            <View key={c.category_id} style={{ marginBottom: spacing.md }}>
-              <View style={styles.row}>
-                <AppText>{catLabel(c.category_key, c.label_en)}</AppText>
-                <AppText>{formatAmount(c.total_minor, data.currency)}</AppText>
-              </View>
-              <View style={styles.track}>
-                <View style={[styles.bar, { width: `${(c.total_minor / maxCat) * 100}%` }]} />
-              </View>
-            </View>
-          ))}
-        </Card>
-      ) : null}
-
-      {/* Planned commitments — DISTINCT tinted card, never blended with spend */}
-      <Card planned>
-        <SectionTitle>הוצאות קבועות · מתוכנן</SectionTitle>
-        <AppText size={font.heading} weight="700">
-          {formatAmount(data.committed_amount_minor, data.currency)}
-        </AppText>
-        {data.upcoming_commitments.length > 0 ? (
-          <View style={{ marginTop: spacing.lg }}>
-            <SectionTitle>חיובים קרובים</SectionTitle>
-            {data.upcoming_commitments.map((u: UpcomingCommitment) => (
-              <View key={u.template_id} style={[styles.row, { marginBottom: spacing.sm }]}>
-                <AppText color={colors.textSecondary}>
-                  {catLabel(u.category_key)} · {formatShortDate(u.next_expected_date)}
-                </AppText>
-                <AppText>{formatAmount(u.amount_minor, data.currency)}</AppText>
-              </View>
-            ))}
-          </View>
-        ) : null}
-      </Card>
-
-      {/* Recent transactions */}
-      {data.recent_transactions.length > 0 ? (
-        <Card>
-          <SectionTitle>עסקאות אחרונות</SectionTitle>
-          {data.recent_transactions.map((t: RecentTxn) => (
-            <View key={t.id} style={[styles.row, { marginBottom: spacing.md }]}>
-              <View style={{ flex: 1 }}>
-                <AppText>
-                  {t.merchant_display_name ??
-                    (t.is_uncategorized ? 'ללא קטגוריה' : catLabel(t.category_key))}
-                </AppText>
-                <AppText color={colors.muted} size={font.caption}>
-                  {formatShortDate(t.occurred_on)}
-                  {t.is_uncategorized ? ' · לא מקוטלג' : ''}
-                </AppText>
-              </View>
-              <AppText weight="600">{formatAmount(t.amount_minor, t.currency)}</AppText>
-            </View>
-          ))}
-        </Card>
-      ) : null}
-
-      {/* Quick Add placeholder (next slice) */}
-      <Button
-        title="הוספת הוצאה"
-        onPress={() => Alert.alert('הוספת הוצאה', 'זמין בקרוב')}
-      />
-    </ScrollView>
+    <Screen>
+      {header}
+      {body}
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.lg, paddingBottom: spacing.xl },
-  center: {
-    flex: 1,
+  header: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xl,
-    backgroundColor: colors.bg,
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
   },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  track: {
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: colors.elevated,
-    marginTop: spacing.sm,
-    overflow: 'hidden',
+  gear: { padding: spacing.xs },
+  content: { padding: spacing.lg, paddingBottom: spacing.xxl },
+  hero: { paddingVertical: spacing.xl },
+  heroMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: spacing.lg,
   },
-  bar: { height: 6, borderRadius: 999, backgroundColor: colors.accent },
+  metaPill: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  rowStart: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  track: { height: 6, borderRadius: radius.pill, backgroundColor: colors.surfaceAlt, marginTop: spacing.sm, overflow: 'hidden' },
+  bar: { height: 6, borderRadius: radius.pill },
+  divider: { height: 1, backgroundColor: colors.border, marginStart: 54 },
+  recentRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.md },
+  recentIcon: { width: 38, height: 38, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 });

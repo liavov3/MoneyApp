@@ -55,3 +55,74 @@ export interface CategoryOut {
   included_in_cash_flow: boolean;
   is_system: boolean;
 }
+
+// Full transaction shape (quick-add response / list / read) — API_CONTRACT §8/§9.
+export interface TransactionOut {
+  id: string;
+  amount_minor: number;
+  currency: string;
+  transaction_type: string;
+  source: string;
+  merchant_id: string | null;
+  merchant_display_name: string | null;
+  category_id: string | null;
+  category_key: string | null;
+  occurred_on: string;
+  note: string | null;
+  is_card_settlement: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QuickAddResponse {
+  transaction: TransactionOut;
+  warnings: Array<Record<string, unknown>>;
+  category_suggestion: {
+    category_id: string;
+    category_key: string | null;
+    source: string;
+  } | null;
+  rule_prompt: Record<string, unknown>;
+  alias_suggestion: Record<string, unknown> | null;
+}
+
+export interface TransactionListResponse {
+  items: TransactionOut[];
+  next_cursor: string | null;
+}
+
+export interface RecentMerchant {
+  merchant_id: string;
+  display_name: string;
+  suggested_category_id: string | null;
+  suggested_category_key: string | null;
+  suggested_category_source: string | null;
+  last_used_at: string;
+}
+
+export interface MerchantSuggestion {
+  merchant_id: string;
+  display_name: string;
+  confidence: string;
+  requires_confirmation: boolean;
+  matched_via: string;
+  suggested_category_id: string | null;
+  suggested_category_key: string | null;
+  suggested_category_source: string;
+}
+
+export interface MerchantSuggestionsResponse {
+  query_confidence: string;
+  auto_select_merchant_id: string | null;
+  items: MerchantSuggestion[];
+}
+
+// What Quick Add sends (amount required; everything else optional). §8/§14.
+export interface QuickAddInput {
+  amount: string;
+  transaction_type?: string;
+  occurred_on?: string;
+  note?: string;
+  category_id?: string;
+  merchant_input?: string;
+}

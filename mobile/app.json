@@ -10,11 +10,23 @@
       "backgroundColor": "#0E1116",
       "resizeMode": "contain"
     },
-    "assetBundlePatterns": ["**/*"],
-    "ios": { "supportsTablet": true },
-    "android": {
-      "adaptiveIcon": { "backgroundColor": "#0E1116" }
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
     },
-    "web": { "bundler": "metro" }
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0E1116"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-font"
+    ]
   }
 }

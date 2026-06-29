@@ -1,43 +1,21 @@
-// Root: forces Hebrew RTL, then routes between the dev token gate and Home.
-// No navigation library — a single screen plus the gate is all this slice needs.
+// Root: forces Hebrew RTL, provides safe-area context, renders the navigator.
+// Auth is config-only (dev token via EXPO_PUBLIC_API_TOKEN) — no login screen.
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
-import { I18nManager, SafeAreaView, StyleSheet } from 'react-native';
+import React from 'react';
+import { I18nManager } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { clearToken, getToken } from './src/api';
-import { Loading } from './src/components/ui';
-import HomeScreen from './src/screens/HomeScreen';
-import TokenGateScreen from './src/screens/TokenGateScreen';
-import { colors } from './src/theme';
+import { RootNavigator } from './src/RootNavigator';
 
 // Hebrew-first: lay everything out right-to-left.
 I18nManager.allowRTL(true);
 I18nManager.forceRTL(true);
 
-type Route = 'loading' | 'gate' | 'home';
-
 export default function App() {
-  const [route, setRoute] = useState<Route>('loading');
-
-  useEffect(() => {
-    getToken().then((t) => setRoute(t ? 'home' : 'gate'));
-  }, []);
-
-  async function onAuthExpired() {
-    await clearToken();
-    setRoute('gate');
-  }
-
   return (
-    <SafeAreaView style={styles.root}>
+    <SafeAreaProvider>
       <StatusBar style="light" />
-      {route === 'loading' ? <Loading /> : null}
-      {route === 'gate' ? <TokenGateScreen onReady={() => setRoute('home')} /> : null}
-      {route === 'home' ? <HomeScreen onAuthExpired={onAuthExpired} /> : null}
-    </SafeAreaView>
+      <RootNavigator />
+    </SafeAreaProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
-});
