@@ -13,26 +13,34 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError, getMerchantSuggestions, getRecentMerchants, quickAdd } from '../api';
 import { CategoryChip } from '../components/categories/CategoryChip';
 import { MerchantSuggestionChip } from '../components/merchants/MerchantSuggestionChip';
-import { AmountDisplay, AmountKeypad } from '../components/transactions/QuickAmountInput';
-import { AppText, Button, Input } from '../components/ui';
-import { formatAmount, todayISO } from '../format';
+import { AppText, Button, Input, SegmentedControl } from '../components/ui';
+import { DatePicker } from '../components/ui/DatePicker';
+import { formatDateLong, todayISO } from '../format';
 import { colors, font, radius, spacing, weight } from '../theme';
 import type { MerchantSuggestion, RecentMerchant } from '../types';
 import { useCategories } from '../useCategories';
 
+type TxnType = 'expense' | 'income';
+// Common income sources — tapped into the name field (becomes merchant_input).
+const INCOME_SOURCES = ['משכורת', 'החזר', 'מתנה', 'עבודה', 'בונוס'];
+
 export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
   const insets = useSafeAreaInsets();
   const { consumer } = useCategories();
+  const [txnType, setTxnType] = useState<TxnType>('expense');
   const [amount, setAmount] = useState('');
   const [merchant, setMerchant] = useState('');
-  const [merchantFocused, setMerchantFocused] = useState(false);
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [occurredOn, setOccurredOn] = useState(todayISO());
+  const [dateOpen, setDateOpen] = useState(false);
   const [recent, setRecent] = useState<RecentMerchant[]>([]);
   const [suggestions, setSuggestions] = useState<MerchantSuggestion[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isIncome = txnType === 'income';
 
   useEffect(() => {
     getRecentMerchants(8)
@@ -61,84 +69,120 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
   const pickMerchant = (name: string, suggestedCategoryId: string | null) => {
     setMerchant(name);
     setSuggestions([]);
-    setMerchantFocused(false);
-    if (suggestedCategoryId && !categoryId) setCategoryId(suggestedCategoryId);
+    if (!isIncome && suggestedCategoryId && !categoryId) setCategoryId(suggestedCategoryId);
   };
 
   const amountValue = Number(amount);
   const canSave = amount !== '' && amountValue > 0 && !saving && !saved;
 
   const onSave = async () => {
-    if (!canSave) return; // guards empty/zero + double-submit
+    if (!canSave) return;
     setSaving(true);
     setErrorMsg(null);
     try {
-      const res = await quickAdd({
+      // Amount is always a non-negative magnitude; the SERVER applies the sign
+      // from transaction_type (expense → negative, income → positive). §14.
+      await quickAdd({
         amount,
-        occurred_on: todayISO(),
+        transaction_type: txnType,
+        occurred_on: occurredOn,
         ...(merchant.trim() ? { merchant_input: merchant.trim() } : {}),
-        ...(categoryId ? { category_id: categoryId } : {}),
+        ...(!isIncome && categoryId ? { category_id: categoryId } : {}),
       });
-      void res;
-      setSaved(true); // success overlay, then close
+      setSaved(true);
       setTimeout(onAdded, 650);
     } catch (e) {
-      // Map the few known validation codes to friendly Hebrew; else generic.
       const code = e instanceof ApiError ? e.code : undefined;
       setErrorMsg(
         code === 'too_many_decimals'
           ? 'אפשר עד שתי ספרות אחרי הנקודה.'
           : code === 'zero_amount'
             ? 'יש להזין סכום גדול מאפס.'
-            : 'שמירת ההוצאה נכשלה. בדוק את החיבור ונסה שוב.',
+            : 'השמירה נכשלה. בדוק את החיבור ונסה שוב.',
       );
       setSaving(false);
     }
   };
 
-  const showRecent = merchant.trim().length < 2 && recent.length > 0;
-  const showSuggest = merchant.trim().length >= 2 && suggestions.length > 0;
+  const showRecent = !isIncome && merchant.trim().length < 2 && recent.length > 0;
+  const showSuggest = !isIncome && merchant.trim().length >= 2 && suggestions.length > 0;
+  const tint = isIncome ? colors.success : colors.accent;
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
+      {/* [A] Header */}
       <View style={styles.header}>
         <Pressable onPress={onClose} hitSlop={10} style={styles.close}>
           <Ionicons name="close" size={26} color={colors.textSecondary} />
         </Pressable>
         <AppText size={font.title} weight={weight.semibold}>
-          הוצאה חדשה
+          {isIncome ? 'הכנסה חדשה' : 'הוצאה חדשה'}
         </AppText>
         <View style={styles.close} />
       </View>
 
+      {/* [B] KeyboardAvoidingView */}
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <AmountDisplay value={amount} />
+        {/* [B1] Type toggle */}
+        <View style={styles.toggle}>
+          <SegmentedControl<TxnType>
+            value={txnType}
+            onChange={(v) => {
+              setTxnType(v);
+              if (v === 'income') setCategoryId(null);
+            }}
+            tint={tint}
+            options={[
+              { value: 'expense', label: 'הוצאה', icon: 'arrow-down' },
+              { value: 'income', label: 'הכנסה', icon: 'arrow-up' },
+            ]}
+          />
+        </View>
 
+        {/* [B2] Scroll form */}
         <ScrollView
           style={styles.flex}
-          contentContainerStyle={styles.details}
+          contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Merchant (optional) */}
-          <Input
-            iconLeft="storefront-outline"
-            placeholder="בית עסק (לא חובה)"
-            value={merchant}
-            onChangeText={setMerchant}
-            onFocus={() => setMerchantFocused(true)}
-            onBlur={() => setMerchantFocused(false)}
-            onClear={() => setMerchant('')}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="done"
-          />
-          {showRecent || showSuggest ? (
+          {/* [B2-1] Merchant block */}
+          <View>
+            <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
+              {isIncome ? 'מקור הכנסה' : 'בית עסק'}
+            </AppText>
+            <Input
+              iconLeft={isIncome ? 'cash-outline' : 'storefront-outline'}
+              placeholder={isIncome ? 'מקור ההכנסה (לא חובה)' : 'בית עסק (לא חובה)'}
+              value={merchant}
+              onChangeText={setMerchant}
+              onClear={() => setMerchant('')}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="done"
+            />
+          </View>
+
+          {/* [B2-2] Merchant chips / suggestions */}
+          {isIncome ? (
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.chipRow}
               keyboardShouldPersistTaps="handled"
+              style={{ marginTop: -spacing.sm }}
+            >
+              {INCOME_SOURCES.map((s) => (
+                <MerchantSuggestionChip key={s} label={s} onPress={() => pickMerchant(s, null)} />
+              ))}
+            </ScrollView>
+          ) : showRecent || showSuggest ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.chipRow}
+              keyboardShouldPersistTaps="handled"
+              style={{ marginTop: -spacing.sm }}
             >
               {showSuggest
                 ? suggestions.map((s) => (
@@ -159,18 +203,29 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
             </ScrollView>
           ) : null}
 
-          {/* Category (optional) — horizontal, compact */}
-          {consumer.length > 0 ? (
-            <View style={styles.section}>
+          {/* [B2-3] Amount block */}
+          <View>
+            <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
+              סכום
+            </AppText>
+            <Input
+              iconLeft="cash-outline"
+              placeholder="0"
+              value={amount}
+              onChangeText={setAmount}
+              keyboardType="decimal-pad"
+              returnKeyType="done"
+              onClear={() => setAmount('')}
+            />
+          </View>
+
+          {/* [B2-4] Category block — wrap layout, expense only */}
+          {!isIncome && consumer.length > 0 ? (
+            <View>
               <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
                 קטגוריה (לא חובה)
               </AppText>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.chipRow}
-                keyboardShouldPersistTaps="handled"
-              >
+              <View style={styles.categoryWrap}>
                 {consumer.map((c) => (
                   <CategoryChip
                     key={c.id}
@@ -180,17 +235,30 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
                     onPress={() => setCategoryId(categoryId === c.id ? null : c.id)}
                   />
                 ))}
-              </ScrollView>
+              </View>
             </View>
           ) : null}
 
-          <View style={styles.dateRow}>
-            <Ionicons name="calendar-outline" size={15} color={colors.textMuted} />
-            <AppText size={font.caption} color={colors.textMuted}>
-              היום
+          {/* [B2-5] Date block */}
+          <View>
+            <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
+              תאריך
             </AppText>
+            <Pressable onPress={() => setDateOpen(true)} hitSlop={8} style={styles.datePressable}>
+              <Ionicons name="chevron-down" size={13} color={colors.textMuted} />
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <AppText
+                  size={font.body}
+                  color={occurredOn === todayISO() ? colors.textSecondary : colors.textPrimary}
+                >
+                  {occurredOn === todayISO() ? 'היום' : formatDateLong(occurredOn)}
+                </AppText>
+                <Ionicons name="calendar-outline" size={15} color={colors.textMuted} />
+              </View>
+            </Pressable>
           </View>
 
+          {/* [B2-6] Error box */}
           {errorMsg ? (
             <View style={styles.errorBox}>
               <Ionicons name="alert-circle" size={16} color={colors.danger} />
@@ -201,23 +269,31 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
           ) : null}
         </ScrollView>
 
-        {/* Keypad hides while the OS keyboard is up (merchant typing). */}
-        {!merchantFocused ? <AmountKeypad value={amount} onChange={setAmount} /> : null}
-
+        {/* [B3] Footer */}
         <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
           <Button
-            title={canSave ? `שמירה · ${formatAmount(amountValue * 100)}` : 'שמירה'}
+            title="הוספה"
             icon="checkmark"
             onPress={onSave}
             disabled={!canSave}
             loading={saving}
+            style={isIncome ? { backgroundColor: colors.success } : undefined}
           />
         </View>
       </KeyboardAvoidingView>
 
+      {/* [C] DatePicker */}
+      <DatePicker
+        visible={dateOpen}
+        value={occurredOn}
+        onChange={setOccurredOn}
+        onClose={() => setDateOpen(false)}
+      />
+
+      {/* [D] Success overlay */}
       {saved ? (
         <View style={styles.successOverlay} pointerEvents="none">
-          <View style={styles.successCircle}>
+          <View style={[styles.successCircle, { backgroundColor: tint }]}>
             <Ionicons name="checkmark" size={42} color={colors.onAccent} />
           </View>
           <AppText size={font.title} weight={weight.semibold} style={{ marginTop: spacing.md }}>
@@ -240,10 +316,25 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   close: { width: 32, alignItems: 'center' },
-  details: { paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
-  section: { marginTop: spacing.lg },
-  chipRow: { gap: spacing.sm, paddingTop: spacing.md, paddingEnd: spacing.lg },
-  dateRow: { flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: spacing.lg },
+  toggle: { paddingHorizontal: spacing.lg, paddingBottom: spacing.md },
+  scrollContent: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xl,
+    gap: spacing.lg,
+  },
+  chipRow: { gap: spacing.sm, paddingEnd: spacing.lg },
+  categoryWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  datePressable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.input,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 14,
+  },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -251,7 +342,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#3a1f24',
     borderRadius: radius.input,
     padding: spacing.md,
-    marginTop: spacing.lg,
   },
   footer: {
     paddingHorizontal: spacing.lg,
@@ -270,7 +360,6 @@ const styles = StyleSheet.create({
     width: 84,
     height: 84,
     borderRadius: radius.pill,
-    backgroundColor: colors.success,
     alignItems: 'center',
     justifyContent: 'center',
   },
