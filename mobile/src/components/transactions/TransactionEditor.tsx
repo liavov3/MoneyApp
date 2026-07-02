@@ -126,7 +126,12 @@ export function TransactionEditor({
   };
 
   return (
-    <BottomSheet visible={visible} onClose={onClose} title="עריכת עסקה">
+    <BottomSheet
+      visible={visible}
+      onClose={onClose}
+      title="עריכת עסקה"
+      dismissOnBackdropPress={false}
+    >
       {loadError ? (
         <View style={styles.center}>
           <AppText color={colors.textSecondary}>לא הצלחנו לטעון את העסקה.</AppText>

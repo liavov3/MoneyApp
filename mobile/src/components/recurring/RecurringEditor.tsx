@@ -114,7 +114,12 @@ export function RecurringEditor({
   };
 
   return (
-    <BottomSheet visible={visible} onClose={onClose} title={editing ? 'עריכת הוצאה קבועה' : 'הוצאה קבועה חדשה'}>
+    <BottomSheet
+      visible={visible}
+      onClose={onClose}
+      title={editing ? 'עריכת הוצאה קבועה' : 'הוצאה קבועה חדשה'}
+      dismissOnBackdropPress={false}
+    >
       <View style={{ gap: spacing.lg, paddingBottom: spacing.md }}>
         <View>
           <AppText size={font.caption} color={colors.textSecondary} style={styles.label}>

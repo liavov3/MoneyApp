@@ -4,7 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -226,25 +228,37 @@ export function SegmentedControl<T extends string>({
 }
 
 // --- Bottom sheet -----------------------------------------------------------
-// Modal sheet anchored to the bottom; tap the backdrop to dismiss. Content
-// scrolls; respects the bottom safe area so actions never sit under the home
-// indicator. `title` + optional close button form the header.
+// Modal sheet anchored to the bottom. Content scrolls; respects the bottom
+// safe area so actions never sit under the home indicator. `title` + optional
+// close button form the header. The sheet itself is a KeyboardAvoidingView so
+// an open keyboard shrinks its content area instead of covering the footer.
+// `dismissOnBackdropPress` (default true) lets form/editor sheets opt out of
+// tap-outside dismissal so an in-progress edit isn't lost by an accidental tap;
+// the header close button and Android back button still close it either way.
 export function BottomSheet({
   visible,
   onClose,
   title,
   children,
+  dismissOnBackdropPress = true,
 }: {
   visible: boolean;
   onClose: () => void;
   title?: string;
   children: React.ReactNode;
+  dismissOnBackdropPress?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.sheetBackdrop} onPress={onClose} />
-      <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>
+      <Pressable
+        style={styles.sheetBackdrop}
+        onPress={dismissOnBackdropPress ? onClose : undefined}
+      />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}
+      >
         <View style={styles.sheetHandle} />
         {title ? (
           <View style={styles.sheetHeader}>
@@ -259,7 +273,7 @@ export function BottomSheet({
         <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           {children}
         </ScrollView>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
