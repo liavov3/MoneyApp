@@ -35,6 +35,10 @@ _ALLOWED_KEYS: Final[frozenset[str]] = frozenset(
         "transaction_type",
         "source",
         "cadence",
+        # Non-sensitive period / goal enums (never an amount).
+        "month",
+        "goal_type",
+        "scope",
         "row_count",
         "count",
         # Opaque uuid identifiers only (never email/token).

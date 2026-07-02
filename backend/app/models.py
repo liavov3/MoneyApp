@@ -476,3 +476,70 @@ class RecurringExpenseTemplate(Base):
             "next_expected_date",
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# monthly_goals (additive, outside frozen v0.0.1 contract)
+# ---------------------------------------------------------------------------
+class MonthlyGoal(Base):
+    __tablename__ = "monthly_goals"
+
+    id: Mapped[str] = _uuid_pk()
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 'expense' | 'income' | 'savings'
+    goal_type: Mapped[str] = mapped_column(Text, nullable=False)
+    # 'default' (no month) | 'month_override' (a specific 'YYYY-MM')
+    scope: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL for a default goal; 'YYYY-MM' for a month override.
+    month: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A goal is a positive budget cap (NOT an expense — never stored negative).
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'ILS'")
+    )
+    created_at: Mapped[object] = _created_at()
+    updated_at: Mapped[object] = _updated_at()
+
+    __table_args__ = (
+        CheckConstraint(
+            "goal_type IN ('expense', 'income', 'savings')",
+            name="ck_monthly_goals_goal_type",
+        ),
+        CheckConstraint(
+            "scope IN ('default', 'month_override')",
+            name="ck_monthly_goals_scope",
+        ),
+        CheckConstraint(
+            "(scope = 'default' AND month IS NULL) "
+            "OR (scope = 'month_override' AND month IS NOT NULL)",
+            name="ck_monthly_goals_scope_month",
+        ),
+        CheckConstraint(
+            "month IS NULL OR month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'",
+            name="ck_monthly_goals_month_format",
+        ),
+        CheckConstraint("amount_minor > 0", name="ck_monthly_goals_amount_positive"),
+        CheckConstraint(
+            "char_length(currency) = 3", name="ck_monthly_goals_currency_len"
+        ),
+        # One default per (user, goal_type); one override per (user, goal_type, month).
+        Index(
+            "uq_monthly_goals_default",
+            "user_id",
+            "goal_type",
+            unique=True,
+            postgresql_where=text("scope = 'default'"),
+        ),
+        Index(
+            "uq_monthly_goals_override",
+            "user_id",
+            "goal_type",
+            "month",
+            unique=True,
+            postgresql_where=text("scope = 'month_override'"),
+        ),
+    )

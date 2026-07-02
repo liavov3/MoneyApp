@@ -118,9 +118,26 @@ docs/                    # FROZEN specs (see below)
 Category-rule suggestions are wired into quick-add, `/merchants/recent`, and
 `/merchants/suggestions` via the §9 ladder (incl. recent-merchant memory).
 
-NOT yet implemented: `GET /home` (dashboard), `rule_prompt.offer` in quick-add
-("Always categorize…?"), `POST /category-rules` + `PATCH/DELETE /category-rules`,
-recurring templates, bank/card import, UI/mobile, production auth.
+Additive (OUTSIDE the frozen v0.0.1 contract; new migrations/router, frozen
+`docs/` untouched). Goals are POSITIVE integer-agorot caps (never signed) with a
+`goal_type` (`expense`/`income`/`savings`) and a `scope`: `default` (month NULL,
+applies to all months) or `month_override` (a specific `YYYY-MM`). Effective goal
+per month = override wins over default. Two partial-unique indexes: one default
+per (user, goal_type), one override per (user, goal_type, month):
+- `GET /monthly-goals?month=YYYY-MM` — effective state for all 3 types:
+  `{month, currency, items:[{goal_type, default_amount_minor, override_amount_minor,
+  effective_amount_minor, effective_source}]}`.
+- `PUT /monthly-goals` — upsert one goal `{goal_type, scope, month?, amount_minor}`.
+- `DELETE /monthly-goals?goal_type=&scope=&month=` — idempotent 204 (drop an
+  override → fall back to default, or clear a default).
+  Consumed by the mobile full-screen `GoalsScreen` + Home cards (expense card with
+  נוצל/נשאר/חריגה + a default/override source badge; compact income/savings card).
+  Home computes utilization client-side against `/home`'s `spent_so_far_minor`
+  (the frozen `/home` payload is unchanged).
+
+NOT yet implemented: `rule_prompt.offer` in quick-add ("Always categorize…?"),
+`POST /category-rules` + `PATCH/DELETE /category-rules`, bank/card import,
+production auth.
 
 ## Frozen docs (do NOT change without explicit instruction)
 
