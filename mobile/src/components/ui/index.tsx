@@ -4,7 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -176,6 +178,92 @@ export function Input(
   );
 }
 
+// --- Segmented control ------------------------------------------------------
+// Generic two-or-more-way toggle (expense/income, cadence, …). RTL row; the
+// selected segment fills with the accent. `tint` recolors the active segment
+// (e.g. success green for "income").
+export function SegmentedControl<T extends string>({
+  options,
+  value,
+  onChange,
+  tint = colors.accent,
+}: {
+  options: { value: T; label: string; icon?: keyof typeof Ionicons.glyphMap }[];
+  value: T;
+  onChange: (v: T) => void;
+  tint?: string;
+}) {
+  return (
+    <View style={styles.segment}>
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <Pressable
+            key={o.value}
+            onPress={() => onChange(o.value)}
+            style={[styles.segmentItem, active && { backgroundColor: tint }]}
+          >
+            {o.icon ? (
+              <Ionicons
+                name={o.icon}
+                size={16}
+                color={active ? colors.onAccent : colors.textSecondary}
+                style={{ marginStart: 6 }}
+              />
+            ) : null}
+            <AppText
+              weight={active ? weight.semibold : weight.medium}
+              color={active ? colors.onAccent : colors.textSecondary}
+              size={font.body}
+            >
+              {o.label}
+            </AppText>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+// --- Bottom sheet -----------------------------------------------------------
+// Modal sheet anchored to the bottom; tap the backdrop to dismiss. Content
+// scrolls; respects the bottom safe area so actions never sit under the home
+// indicator. `title` + optional close button form the header.
+export function BottomSheet({
+  visible,
+  onClose,
+  title,
+  children,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.sheetBackdrop} onPress={onClose} />
+      <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>
+        <View style={styles.sheetHandle} />
+        {title ? (
+          <View style={styles.sheetHeader}>
+            <AppText size={font.title} weight={weight.semibold}>
+              {title}
+            </AppText>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <Ionicons name="close" size={24} color={colors.textSecondary} />
+            </Pressable>
+          </View>
+        ) : null}
+        <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          {children}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
 // --- State views ------------------------------------------------------------
 export function LoadingState({ label = 'טוען…' }: { label?: string }) {
   return (
@@ -258,6 +346,50 @@ export function Skeleton({ height = 16, width, style }: { height?: number; width
 
 const styles = StyleSheet.create({
   card: { borderRadius: radius.card, borderWidth: 1, padding: spacing.lg },
+  segment: {
+    flexDirection: 'row',
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.input,
+    padding: 4,
+    gap: 4,
+  },
+  segmentItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: radius.input - 4,
+  },
+  sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)' },
+  sheet: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    maxHeight: '90%',
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.card,
+    borderTopRightRadius: radius.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.border,
+    marginBottom: spacing.md,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
   button: {
     borderRadius: radius.input,
     borderWidth: 1,

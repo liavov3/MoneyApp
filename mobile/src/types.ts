@@ -126,3 +126,84 @@ export interface QuickAddInput {
   category_id?: string;
   merchant_input?: string;
 }
+
+// PATCH /transactions/{id} — partial edit (§9). Only provided keys are applied;
+// `category_id: null` clears the category. Merchant is NOT editable (server
+// drops merchant fields), so it is intentionally absent here.
+export interface PatchTransactionInput {
+  amount?: string;
+  transaction_type?: string;
+  occurred_on?: string;
+  note?: string | null;
+  category_id?: string | null;
+}
+
+// Recurring expense template (API_CONTRACT §12). Amount stored signed-negative;
+// the API accepts/returns a non-negative magnitude convention on input.
+export interface TemplateOut {
+  id: string;
+  name: string;
+  amount_minor: number;
+  currency: string;
+  category_id: string;
+  category_key: string | null;
+  merchant_id: string | null;
+  cadence: string;
+  next_expected_date: string;
+  counts_in_projection: boolean;
+  is_active: boolean;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecurringListResponse {
+  items: TemplateOut[];
+}
+
+export type GoalType = 'expense' | 'income' | 'savings';
+export type GoalScope = 'default' | 'month_override';
+
+export interface GoalTypeState {
+  goal_type: GoalType;
+  default_amount_minor: number | null;
+  override_amount_minor: number | null;
+  effective_amount_minor: number | null;
+  effective_source: GoalScope | null;
+}
+
+export interface MonthlyGoalsResponse {
+  month: string;
+  currency: string;
+  items: GoalTypeState[];
+}
+
+export interface SavedGoal {
+  goal_type: GoalType;
+  scope: GoalScope;
+  month: string | null;
+  amount_minor: number;
+  currency: string;
+}
+
+// Create payload: amount is a non-negative magnitude (server owns the sign).
+export interface CreateTemplateInput {
+  name: string;
+  amount: string;
+  category_id: string;
+  cadence?: string;
+  next_expected_date: string;
+  counts_in_projection?: boolean;
+  note?: string | null;
+}
+
+export interface PatchTemplateInput {
+  name?: string;
+  amount?: string;
+  category_id?: string;
+  cadence?: string;
+  next_expected_date?: string;
+  counts_in_projection?: boolean;
+  is_active?: boolean;
+  note?: string | null;
+}

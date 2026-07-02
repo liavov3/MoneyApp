@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Pressable, RefreshControl, SectionList, StyleSheet, View } from 'react-native';
+import { Pressable, RefreshControl, SectionList, StyleSheet, View } from 'react-native';
 
-import { deleteTransaction, listTransactions } from '../api';
+import { listTransactions } from '../api';
 import { TransactionListItem } from '../components/transactions/TransactionListItem';
+import { MonthSwitcher } from '../components/ui/MonthSwitcher';
 import { AppText, EmptyState, ErrorState, LoadingState, Screen } from '../components/ui';
-import { currentMonth, dateHeader, formatMonthLabel } from '../format';
+import { dateHeader, formatMonthLabel } from '../format';
 import { colors, font, spacing, weight } from '../theme';
 import type { TransactionOut } from '../types';
 import { useCategories } from '../useCategories';
@@ -25,14 +26,17 @@ function groupByDate(items: TransactionOut[]): Section[] {
 
 export function TransactionsScreen({
   dataVersion,
-  onDataChanged,
-  onOpenSettings,
+  month,
+  onMonthChange,
+  onOpenMenu,
+  onEditTransaction,
 }: {
   dataVersion: number;
-  onDataChanged: () => void;
-  onOpenSettings: () => void;
+  month: string;
+  onMonthChange: (month: string) => void;
+  onOpenMenu: () => void;
+  onEditTransaction: (id: string) => void;
 }) {
-  const month = currentMonth();
   const [items, setItems] = useState<TransactionOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -53,41 +57,23 @@ export function TransactionsScreen({
   }, [month]);
 
   useEffect(() => {
+    setLoading(true);
     load();
   }, [load, dataVersion]);
 
-  const confirmDelete = (t: TransactionOut) => {
-    Alert.alert('מחיקת עסקה', 'למחוק את העסקה? פעולה זו אינה הפיכה.', [
-      { text: 'ביטול', style: 'cancel' },
-      {
-        text: 'מחיקה',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await deleteTransaction(t.id);
-            setItems((prev) => prev.filter((x) => x.id !== t.id));
-            onDataChanged();
-          } catch {
-            Alert.alert('שגיאה', 'מחיקת העסקה נכשלה. נסה שוב.');
-          }
-        },
-      },
-    ]);
-  };
-
   const header = (
     <View style={styles.header}>
-      <View>
+      <View style={styles.titleRow}>
         <AppText size={font.h1} weight={weight.bold}>
           עסקאות
         </AppText>
-        <AppText size={font.caption} color={colors.textMuted}>
-          {formatMonthLabel(month)}
-        </AppText>
+        <Pressable onPress={onOpenMenu} hitSlop={10} style={{ padding: spacing.xs }}>
+          <Ionicons name="menu" size={24} color={colors.textSecondary} />
+        </Pressable>
       </View>
-      <Pressable onPress={onOpenSettings} hitSlop={10} style={{ padding: spacing.xs }}>
-        <Ionicons name="settings-outline" size={22} color={colors.textSecondary} />
-      </Pressable>
+      <View style={{ marginTop: spacing.sm }}>
+        <MonthSwitcher month={month} onChange={onMonthChange} />
+      </View>
     </View>
   );
 
@@ -97,7 +83,13 @@ export function TransactionsScreen({
   } else if (error) {
     body = <ErrorState onRetry={load} />;
   } else if (items.length === 0) {
-    body = <EmptyState icon="receipt-outline" title="אין עסקאות בחודש זה" subtitle="הוצאות שתוסיף יופיעו כאן." />;
+    body = (
+      <EmptyState
+        icon="receipt-outline"
+        title={`אין תנועות ב${formatMonthLabel(month)}`}
+        subtitle="תנועות שתוסיף בחודש זה יופיעו כאן."
+      />
+    );
   } else {
     body = (
       <SectionList
@@ -122,7 +114,11 @@ export function TransactionsScreen({
           </AppText>
         )}
         renderItem={({ item }) => (
-          <TransactionListItem txn={item} label={labelOf(item.category_key)} onPress={() => confirmDelete(item)} />
+          <TransactionListItem
+            txn={item}
+            label={labelOf(item.category_key)}
+            onPress={() => onEditTransaction(item.id)}
+          />
         )}
       />
     );
@@ -138,12 +134,10 @@ export function TransactionsScreen({
 
 const styles = StyleSheet.create({
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   content: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xxl },
   sectionHeader: { marginTop: spacing.lg, marginBottom: spacing.xs },
 });

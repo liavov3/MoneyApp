@@ -3,11 +3,20 @@
 // screen; the backend still requires the token, so it is sent on every request.
 import type {
   CategoryOut,
+  CreateTemplateInput,
+  GoalScope,
+  GoalType,
   HomeResponse,
   MerchantSuggestionsResponse,
+  MonthlyGoalsResponse,
+  PatchTemplateInput,
+  PatchTransactionInput,
   QuickAddInput,
   QuickAddResponse,
   RecentMerchant,
+  RecurringListResponse,
+  SavedGoal,
+  TemplateOut,
   TransactionListResponse,
   TransactionOut,
 } from './types';
@@ -90,5 +99,45 @@ export const listTransactions = (params: { month?: string; cursor?: string; limi
 export const getTransaction = (id: string) =>
   request<TransactionOut>('GET', `/transactions/${id}`);
 
+export const patchTransaction = (id: string, body: PatchTransactionInput) =>
+  request<TransactionOut>('PATCH', `/transactions/${id}`, body);
+
 export const deleteTransaction = (id: string) =>
   request<void>('DELETE', `/transactions/${id}`);
+
+// Recurring expense templates (API_CONTRACT §12). Projection-only on the
+// backend — these never create a transaction row.
+export const listRecurring = (active?: boolean) =>
+  request<RecurringListResponse>(
+    'GET',
+    `/recurring-templates${active === undefined ? '' : `?active=${active}`}`,
+  );
+
+export const createRecurring = (body: CreateTemplateInput) =>
+  request<TemplateOut>('POST', '/recurring-templates', body);
+
+export const patchRecurring = (id: string, body: PatchTemplateInput) =>
+  request<TemplateOut>('PATCH', `/recurring-templates/${id}`, body);
+
+export const deleteRecurring = (id: string) =>
+  request<void>('DELETE', `/recurring-templates/${id}`);
+
+export const getMonthlyGoals = (month: string) =>
+  request<MonthlyGoalsResponse>('GET', `/monthly-goals?month=${encodeURIComponent(month)}`);
+
+export const putMonthlyGoal = (body: {
+  goal_type: GoalType;
+  scope: GoalScope;
+  month?: string;
+  amount_minor: number;
+}) => request<SavedGoal>('PUT', '/monthly-goals', body);
+
+export const deleteMonthlyGoal = (params: {
+  goal_type: GoalType;
+  scope: GoalScope;
+  month?: string;
+}) => {
+  const q = new URLSearchParams({ goal_type: params.goal_type, scope: params.scope });
+  if (params.month) q.set('month', params.month);
+  return request<void>('DELETE', `/monthly-goals?${q.toString()}`);
+};

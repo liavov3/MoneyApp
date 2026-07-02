@@ -1,14 +1,21 @@
 // Tiny custom navigator: two tabs (Home / Transactions) + a prominent center
-// Add FAB that opens the Quick Add modal. Settings is reached via the header
-// gear. Avoids pulling in the full react-navigation stack for a 3-route app.
+// Add FAB that opens the Quick Add modal. Settings and the recurring-commitments
+// manager are full-screen overlays reached from the header / Home. The selected
+// month is held here so Home and Transactions stay in sync. The transaction
+// editor lives here too so edits/deletes from either screen refresh both.
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
 import { Modal, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { TransactionEditor } from './components/transactions/TransactionEditor';
 import { AppText } from './components/ui';
+import { MenuSheet } from './components/ui/MenuSheet';
+import { currentMonth } from './format';
+import { GoalsScreen } from './screens/GoalsScreen';
 import { HomeScreen } from './screens/HomeScreen';
 import { QuickAddScreen } from './screens/QuickAddScreen';
+import { RecurringScreen } from './screens/RecurringScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { TransactionsScreen } from './screens/TransactionsScreen';
 import { colors, font, radius, shadow, spacing, weight } from './theme';
@@ -18,9 +25,14 @@ type Tab = 'home' | 'transactions';
 export function RootNavigator() {
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('home');
+  const [month, setMonth] = useState(currentMonth());
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [recurringOpen, setRecurringOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [goalsOpen, setGoalsOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [addSession, setAddSession] = useState(0); // bump to remount a fresh form
+  const [editTxnId, setEditTxnId] = useState<string | null>(null);
   const [dataVersion, setDataVersion] = useState(0);
 
   const openAdd = () => {
@@ -32,36 +44,48 @@ export function RootNavigator() {
     setAddOpen(false);
     bumpData();
   };
+  const afterEdit = () => {
+    setEditTxnId(null);
+    bumpData();
+  };
+
+  const overlay = settingsOpen || recurringOpen || goalsOpen;
 
   return (
     <View style={styles.flex}>
       <View style={styles.flex}>
         {settingsOpen ? (
           <SettingsScreen onBack={() => setSettingsOpen(false)} />
+        ) : recurringOpen ? (
+          <RecurringScreen onBack={() => setRecurringOpen(false)} onChanged={bumpData} />
+        ) : goalsOpen ? (
+          <GoalsScreen month={month} onBack={() => setGoalsOpen(false)} onChanged={bumpData} />
         ) : tab === 'home' ? (
           <HomeScreen
             dataVersion={dataVersion}
+            month={month}
+            onMonthChange={setMonth}
             onQuickAdd={openAdd}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenMenu={() => setMenuOpen(true)}
+            onOpenRecurring={() => setRecurringOpen(true)}
+            onOpenGoal={() => setGoalsOpen(true)}
+            onEditTransaction={setEditTxnId}
           />
         ) : (
           <TransactionsScreen
             dataVersion={dataVersion}
-            onDataChanged={bumpData}
-            onOpenSettings={() => setSettingsOpen(true)}
+            month={month}
+            onMonthChange={setMonth}
+            onOpenMenu={() => setMenuOpen(true)}
+            onEditTransaction={setEditTxnId}
           />
         )}
       </View>
 
-      {/* Bottom tab bar + center Add FAB (hidden while Settings is open) */}
-      {!settingsOpen ? (
+      {/* Bottom tab bar + center Add FAB (hidden under full-screen overlays) */}
+      {!overlay ? (
         <View style={[styles.tabBar, { paddingBottom: insets.bottom + spacing.xs }]}>
-          <TabButton
-            label="בית"
-            icon="home"
-            active={tab === 'home'}
-            onPress={() => setTab('home')}
-          />
+          <TabButton label="בית" icon="home" active={tab === 'home'} onPress={() => setTab('home')} />
           <Pressable onPress={openAdd} style={styles.fab}>
             <Ionicons name="add" size={30} color={colors.onAccent} />
           </Pressable>
@@ -82,6 +106,24 @@ export function RootNavigator() {
       >
         <QuickAddScreen key={addSession} onClose={() => setAddOpen(false)} onAdded={onAdded} />
       </Modal>
+
+      <TransactionEditor
+        txnId={editTxnId}
+        visible={editTxnId !== null}
+        onClose={() => setEditTxnId(null)}
+        onSaved={afterEdit}
+        onDeleted={afterEdit}
+      />
+
+      <MenuSheet
+        visible={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        onHome={() => { setTab('home'); setSettingsOpen(false); setRecurringOpen(false); }}
+        onRecurring={() => setRecurringOpen(true)}
+        onGoal={() => setGoalsOpen(true)}
+        onSettings={() => setSettingsOpen(true)}
+      />
+
     </View>
   );
 }

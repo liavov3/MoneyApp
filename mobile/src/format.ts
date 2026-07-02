@@ -33,12 +33,55 @@ export function currentMonth(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
+// Shift a "YYYY-MM" by delta months (e.g. -1 / +1 for the month switcher).
+export function addMonths(month: string, delta: number): string {
+  const [y, m] = month.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Day-of-month (1–31) from a "YYYY-MM-DD".
+export function dayOfMonth(iso: string): number {
+  return Number(iso.split('-')[2]);
+}
+
+// Next calendar date (YYYY-MM-DD) that lands on `day` (1–31): this month if the
+// day hasn't passed, else next month; clamped to the target month's length.
+// Used to turn a recurring "יורד בכל חודש ב־X" choice into next_expected_date.
+export function nextDateForDay(day: number): string {
+  const now = new Date();
+  const target = day < now.getDate() ? new Date(now.getFullYear(), now.getMonth() + 1, 1) : now;
+  const y = target.getFullYear();
+  const m = target.getMonth();
+  const lastDay = new Date(y, m + 1, 0).getDate();
+  const d = Math.min(day, lastDay);
+  return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 // Today as "YYYY-MM-DD".
 export function todayISO(): string {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
     now.getDate(),
   ).padStart(2, '0')}`;
+}
+
+// User-typed shekel string -> integer agorot, or null if malformed/zero.
+// ponytail: integer-only math (whole*100 + padded-frac) — no float, no rounding error.
+export function shekelToMinor(input: string): number | null {
+  const s = input.trim().replace(',', '.');
+  if (!/^\d+(\.\d{1,2})?$/.test(s)) return null;
+  const [whole, frac = ''] = s.split('.');
+  const minor = Number(whole) * 100 + Number((frac + '00').slice(0, 2));
+  return minor > 0 ? minor : null;
+}
+
+// Integer agorot -> clean shekel input string for prefilling (e.g. 300050 -> "3000.50").
+export function minorToInput(minor: number): string {
+  const abs = Math.abs(minor);
+  const whole = Math.floor(abs / 100);
+  const frac = abs % 100;
+  return frac === 0 ? String(whole) : `${whole}.${String(frac).padStart(2, '0')}`;
 }
 
 // Friendly date header for grouped lists: היום / אתמול / "14 ביוני".
