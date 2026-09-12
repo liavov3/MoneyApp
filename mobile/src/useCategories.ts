@@ -4,15 +4,24 @@ import { useEffect, useSyncExternalStore } from 'react';
 
 import { getCategories } from './api';
 import { createCategoryStore } from './categoryStore';
+import { session } from './session';
 
 const store = createCategoryStore(async () => (await getCategories()).items);
+let lastConnection = session.getConnection();
+session.subscribe(() => {
+  const next = session.getConnection();
+  if (next === lastConnection) return;
+  lastConnection = next;
+  store.reset();
+  if (next) void store.reload();
+});
 
 export function useCategories() {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const cats = state.items;
 
   useEffect(() => {
-    if (!store.getSnapshot().items && !store.getSnapshot().error) void store.reload();
+    if (session.getConnection() && !store.getSnapshot().items && !store.getSnapshot().error) void store.reload();
   }, []);
 
   const labelOf = (key: string | null | undefined): string =>

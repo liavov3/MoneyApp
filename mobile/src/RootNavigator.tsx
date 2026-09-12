@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
 import { Modal, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ConnectionGuard, useConnectionLocked } from './ConnectionGuard';
 
 import { TransactionEditor } from './components/transactions/TransactionEditor';
 import { AppText } from './components/ui';
@@ -22,7 +23,8 @@ import { colors, font, radius, shadow, spacing, weight } from './theme';
 
 type Tab = 'home' | 'transactions';
 
-export function RootNavigator() {
+export function RootNavigator({ connectionVersion = 0 }: { connectionVersion?: number }) {
+  const locked = useConnectionLocked();
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('home');
   const [month, setMonth] = useState(currentMonth());
@@ -33,7 +35,8 @@ export function RootNavigator() {
   const [addOpen, setAddOpen] = useState(false);
   const [addSession, setAddSession] = useState(0); // bump to remount a fresh form
   const [editTxnId, setEditTxnId] = useState<string | null>(null);
-  const [dataVersion, setDataVersion] = useState(0);
+  const [localDataVersion, setDataVersion] = useState(0);
+  const dataVersion = localDataVersion + connectionVersion;
 
   const openAdd = () => {
     setAddSession((s) => s + 1);
@@ -102,9 +105,9 @@ export function RootNavigator() {
         visible={addOpen}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => setAddOpen(false)}
+        onRequestClose={() => { if (!locked) setAddOpen(false); }}
       >
-        <QuickAddScreen key={addSession} onClose={() => setAddOpen(false)} onAdded={onAdded} />
+        <ConnectionGuard modal visible={addOpen}><QuickAddScreen key={addSession} onClose={() => setAddOpen(false)} onAdded={onAdded} /></ConnectionGuard>
       </Modal>
 
       <TransactionEditor

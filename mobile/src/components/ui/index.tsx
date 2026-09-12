@@ -20,6 +20,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, font, radius, shadow, spacing, weight } from '../../theme';
+import { ConnectionGuard, useConnectionLocked } from '../../ConnectionGuard';
 
 // --- Text -------------------------------------------------------------------
 export function AppText(props: {
@@ -259,8 +260,10 @@ export function BottomSheet({
   dismissOnBackdropPress?: boolean;
 }) {
   const insets = useSafeAreaInsets();
+  const locked = useConnectionLocked();
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={() => { if (!locked) onClose(); }}>
+      <ConnectionGuard modal visible={visible}>
       <Pressable
         style={styles.sheetBackdrop}
         onPress={dismissOnBackdropPress ? onClose : undefined}
@@ -284,6 +287,7 @@ export function BottomSheet({
           {children}
         </ScrollView>
       </KeyboardAvoidingView>
+      </ConnectionGuard>
     </Modal>
   );
 }

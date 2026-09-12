@@ -135,7 +135,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
         e instanceof ApiError && e.status === 0
           ? 'לא התקבל אישור שמירה. בדוק את העסקאות לפני ניסיון נוסף כדי למנוע כפילות.'
           : e instanceof ApiError && e.status === 401
-            ? 'החיבור לאפליקציה דורש אימות מחדש. הפרטים שהזנת נשמרו כאן.'
+            ? null // The connection cover explains 401; don't retain a stale warning after reconnecting.
           : code === 'too_many_decimals'
           ? 'אפשר עד שתי ספרות אחרי הנקודה.'
           : code === 'zero_amount'

@@ -49,3 +49,20 @@ test('failed refresh keeps cached categories, and unmounted screens unsubscribe'
   assert.equal(store.getSnapshot().error, true);
   assert.equal(notifications, 0);
 });
+
+test('clearing a session drops cached categories and rejects late results from that session', async () => {
+  const resolvers = [];
+  const store = createCategoryStore(() => new Promise((resolve) => { resolvers.push(resolve); }));
+  const old = store.reload();
+  await Promise.resolve();
+  store.reset();
+  const fresh = store.reload();
+  await Promise.resolve();
+  resolvers[1]([{ id: 'new-user-category' }]);
+  await fresh;
+  resolvers[0]([{ id: 'old-user-category' }]);
+  await old;
+  assert.deepEqual(store.getSnapshot().items, [{ id: 'new-user-category' }]);
+  store.reset();
+  assert.equal(store.getSnapshot().items, null);
+});

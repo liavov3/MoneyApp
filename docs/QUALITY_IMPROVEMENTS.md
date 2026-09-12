@@ -65,11 +65,12 @@ normal path short and keep all predictions explicitly separate from actuals.
 
 ## Additional contract disagreements found during inspection
 
-- `mobile/src/api.ts` uses `EXPO_PUBLIC_API_TOKEN`, which becomes part of the
-  distributed client bundle. API contract section 3 and `backend/app/config.py`
-  explicitly say the dev bearer token must not be in a mobile bundle. A secure
-  credential setup/session flow is required before distribution. The earlier
-  README's SecureStore token-gate description did not match the implementation.
+- Resolved in the runtime-credential slice: `mobile/src/api.ts` previously read
+  `EXPO_PUBLIC_API_TOKEN`, contrary to API section 3 and `backend/app/config.py`.
+  The access code is now entered at runtime and saved using Expo SecureStore on
+  native devices. The public-token setting is ignored. Distribution still needs
+  native persistence/modal verification and appropriate server security; this
+  remains the existing single-user personal-server model.
 - Resolved in the current slice: API contract section 9 permits merchant edits,
   but the implementation previously ignored them. The backend now resolves an
   owned merchant id or merchant text using Quick Add's existing identity ladder;
@@ -136,6 +137,48 @@ Verification for this slice:
 - Full backend suite: 273 passed, zero skipped, database connected (724.94 s).
 - The temporary browser preview was closed and its synthetic user/data removed.
 - Native phone/simulator interaction checks remain unavailable in this run.
+
+## Runtime credential slice
+
+- Restores API section 3's existing rule that the bearer token must not be
+  embedded in a mobile bundle. A masked connection form validates the code
+  through the existing authenticated categories endpoint before saving it.
+- Native credentials use Expo SecureStore with `WHEN_UNLOCKED_THIS_DEVICE_ONLY`,
+  bound to the configured server URL. Web previews keep credentials in memory
+  only. HTTPS is required outside localhost, loopback, and private LAN IPv4
+  development addresses. URLs carrying credentials, queries, or fragments fail
+  validation. The endpoint address remains non-secret build configuration.
+- Explicit disconnection clears credentials, cached categories, and mounted
+  financial screens. Erase failures are visible and retryable. Unauthorized
+  responses cover all screens and sheets, showing one reconnection form on the
+  topmost surface while keeping unsaved forms mounted underneath.
+- Late responses cannot populate a new session or expire its replacement code.
+  A write response crossing a session change remains ambiguous unless the server
+  explicitly rejected authentication. No write is automatically retried.
+- Backend auth, resource routes, ownership, payloads, database/schema, and frozen
+  contract documents remain unchanged. Registration, token refresh/revocation
+  endpoints, and biometric app locking are not introduced.
+- Documentation follows Expo's [environment-variable guidance](https://docs.expo.dev/guides/environment-variables/)
+  and [SecureStore behavior](https://docs.expo.dev/versions/latest/sdk/securestore/).
+
+Verification:
+
+- 29 mobile regressions passed, zero skipped: missing credentials, failed
+  verification, secure-storage failures/retries, server binding, concurrent
+  connection/removal, expiration, stale reads/401s, and ambiguous writes.
+- TypeScript and production web/iOS/Android exports passed. A legacy public-token
+  canary and its variable name were absent from all 44 exported files.
+- Browser/API: incorrect code kept the app gated; a valid code opened Home.
+  Expiration during Quick Add hid financial data and preserved a typed 43.21
+  draft. Reconnection did not create a transaction; one explicit retry saved
+  exactly -4321 agorot, raising actual spending from 12524 to 16845 agorot.
+  Forgetting the connection returned to an empty, masked connection form.
+- Refreshing an authenticated browser preview discarded its temporary code and
+  returned to the empty connection form. No browser application errors remained.
+- Full backend suite: 273 passed, zero skipped, database connected (727.81 s).
+- The temporary preview was closed and its synthetic user/data removed.
+- Real-device persistence, native modals, keyboard, and accessibility testing
+  remain unavailable in this run.
 
 ## Verification and completion
 

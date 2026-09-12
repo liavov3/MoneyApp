@@ -1,9 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { apiBaseUrl, hasToken } from '../api';
-import { AppText, Card, Screen } from '../components/ui';
+import { session } from '../session';
+import { AppText, Button, Card, Screen } from '../components/ui';
 import { colors, font, spacing, weight } from '../theme';
 import appConfig from '../../app.json';
 
@@ -28,6 +28,7 @@ function Row({ label, value, ok }: { label: string; value: string; ok?: boolean 
 }
 
 export function SettingsScreen({ onBack }: { onBack: () => void }) {
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   return (
     <Screen>
       <View style={styles.header}>
@@ -45,9 +46,14 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
           חיבור
         </AppText>
         <Card>
-          <Row label="כתובת שרת" value={apiBaseUrl} />
+          <Row label="כתובת שרת" value={session.getConnection()?.baseUrl ?? ''} />
           <View style={styles.divider} />
-          <Row label="אימות פיתוח" value={hasToken ? 'מחובר' : 'לא מוגדר אסימון'} ok={hasToken} />
+          <Row label="גישה לשרת האישי" value="מחובר" ok />
+          <Button title="שכחת החיבור במכשיר" variant="ghost" disabled={state.busy}
+            onPress={() => { void session.disconnect(); }} style={{ marginTop: spacing.md }} />
+          <AppText size={font.caption} color={colors.textMuted} style={{ marginTop: spacing.sm }}>
+            מסיר את קוד הגישה מהמכשיר. העסקאות שנשמרו נשארות בשרת.
+          </AppText>
         </Card>
 
         <AppText size={font.caption} color={colors.textMuted} style={{ marginTop: spacing.lg, marginBottom: spacing.sm }}>
