@@ -124,6 +124,7 @@ export interface QuickAddInput {
   occurred_on?: string;
   note?: string;
   category_id?: string;
+  merchant_id?: string;
   merchant_input?: string;
 }
 

@@ -375,7 +375,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: radius.input - 4,
   },
-  sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)' },
+  sheetBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.55)' },
   sheet: {
     position: 'absolute',
     left: 0,

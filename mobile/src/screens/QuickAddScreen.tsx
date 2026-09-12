@@ -30,6 +30,8 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
   const [txnType, setTxnType] = useState<TxnType>('expense');
   const [amount, setAmount] = useState('');
   const [merchant, setMerchant] = useState('');
+  const [selectedMerchantId, setSelectedMerchantId] = useState<string | null>(null);
+  const [preserveMerchantInput, setPreserveMerchantInput] = useState(true);
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [occurredOn, setOccurredOn] = useState(todayISO());
   const [dateOpen, setDateOpen] = useState(false);
@@ -52,22 +54,51 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
   useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current);
     const q = merchant.trim();
-    if (q.length < 2) {
+    if (isIncome || q.length < 2) {
       setSuggestions([]);
       return;
     }
+    let active = true;
     debounce.current = setTimeout(() => {
       getMerchantSuggestions(q, 6)
-        .then((r) => setSuggestions(r.items))
-        .catch(() => setSuggestions([]));
+        .then((r) => {
+          if (!active) return;
+          setSuggestions(r.items);
+          const autoSelected = r.auto_select_merchant_id
+            ? r.items.find((item) => item.merchant_id === r.auto_select_merchant_id)
+            : undefined;
+          if (
+            autoSelected &&
+            !autoSelected.requires_confirmation &&
+            ['exact', 'alias_exact', 'normalized_exact'].includes(autoSelected.confidence)
+          ) {
+            setSelectedMerchantId(autoSelected.merchant_id);
+          }
+        })
+        .catch(() => {
+          if (active) setSuggestions([]);
+        });
     }, 250);
     return () => {
+      active = false;
       if (debounce.current) clearTimeout(debounce.current);
     };
-  }, [merchant]);
+  }, [isIncome, merchant]);
 
-  const pickMerchant = (name: string, suggestedCategoryId: string | null) => {
+  const editMerchant = (value: string) => {
+    setMerchant(value);
+    setSelectedMerchantId(null);
+    setPreserveMerchantInput(true);
+  };
+
+  const pickMerchant = (
+    name: string,
+    merchantId: string | null,
+    suggestedCategoryId: string | null,
+  ) => {
     setMerchant(name);
+    setSelectedMerchantId(merchantId);
+    setPreserveMerchantInput(merchantId === null);
     setSuggestions([]);
     if (!isIncome && suggestedCategoryId && !categoryId) setCategoryId(suggestedCategoryId);
   };
@@ -82,15 +113,19 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
     try {
       // Amount is always a non-negative magnitude; the SERVER applies the sign
       // from transaction_type (expense → negative, income → positive). §14.
+      const hasMerchantInput = merchant.trim().length > 0;
       await quickAdd({
         amount,
         transaction_type: txnType,
         occurred_on: occurredOn,
-        ...(merchant.trim() ? { merchant_input: merchant.trim() } : {}),
+        ...(selectedMerchantId ? { merchant_id: selectedMerchantId } : {}),
+        ...(hasMerchantInput && (!selectedMerchantId || preserveMerchantInput)
+          ? { merchant_input: merchant }
+          : {}),
         ...(!isIncome && categoryId ? { category_id: categoryId } : {}),
       });
       setSaved(true);
-      setTimeout(onAdded, 650);
+      onAdded();
     } catch (e) {
       const code = e instanceof ApiError ? e.code : undefined;
       setErrorMsg(
@@ -129,7 +164,11 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
             value={txnType}
             onChange={(v) => {
               setTxnType(v);
-              if (v === 'income') setCategoryId(null);
+              if (v === 'income') {
+                setCategoryId(null);
+                setSelectedMerchantId(null);
+                setPreserveMerchantInput(true);
+              }
             }}
             tint={tint}
             options={[
@@ -146,7 +185,24 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* [B2-1] Merchant block */}
+          {/* [B2-1] Amount block */}
+          <View>
+            <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
+              סכום
+            </AppText>
+            <Input
+              iconLeft="cash-outline"
+              placeholder="0"
+              value={amount}
+              onChangeText={setAmount}
+              keyboardType="decimal-pad"
+              returnKeyType="done"
+              onClear={() => setAmount('')}
+              autoFocus
+            />
+          </View>
+
+          {/* [B2-2] Merchant block */}
           <View>
             <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
               {isIncome ? 'מקור הכנסה' : 'בית עסק'}
@@ -155,15 +211,15 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
               iconLeft={isIncome ? 'cash-outline' : 'storefront-outline'}
               placeholder={isIncome ? 'מקור ההכנסה (לא חובה)' : 'בית עסק (לא חובה)'}
               value={merchant}
-              onChangeText={setMerchant}
-              onClear={() => setMerchant('')}
+              onChangeText={editMerchant}
+              onClear={() => editMerchant('')}
               autoCapitalize="none"
               autoCorrect={false}
               returnKeyType="done"
             />
           </View>
 
-          {/* [B2-2] Merchant chips / suggestions */}
+          {/* [B2-3] Merchant chips / suggestions */}
           {isIncome ? (
             <ScrollView
               horizontal
@@ -173,7 +229,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
               style={{ marginTop: -spacing.sm }}
             >
               {INCOME_SOURCES.map((s) => (
-                <MerchantSuggestionChip key={s} label={s} onPress={() => pickMerchant(s, null)} />
+                <MerchantSuggestionChip key={s} label={s} onPress={() => pickMerchant(s, null, null)} />
               ))}
             </ScrollView>
           ) : showRecent || showSuggest ? (
@@ -189,7 +245,9 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
                     <MerchantSuggestionChip
                       key={s.merchant_id}
                       label={s.display_name}
-                      onPress={() => pickMerchant(s.display_name, s.suggested_category_id)}
+                      onPress={() =>
+                        pickMerchant(s.display_name, s.merchant_id, s.suggested_category_id)
+                      }
                     />
                   ))
                 : recent.map((m) => (
@@ -197,27 +255,13 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
                       key={m.merchant_id}
                       label={m.display_name}
                       recent
-                      onPress={() => pickMerchant(m.display_name, m.suggested_category_id)}
+                      onPress={() =>
+                        pickMerchant(m.display_name, m.merchant_id, m.suggested_category_id)
+                      }
                     />
                   ))}
             </ScrollView>
           ) : null}
-
-          {/* [B2-3] Amount block */}
-          <View>
-            <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
-              סכום
-            </AppText>
-            <Input
-              iconLeft="cash-outline"
-              placeholder="0"
-              value={amount}
-              onChangeText={setAmount}
-              keyboardType="decimal-pad"
-              returnKeyType="done"
-              onClear={() => setAmount('')}
-            />
-          </View>
 
           {/* [B2-4] Category block — wrap layout, expense only */}
           {!isIncome && consumer.length > 0 ? (
@@ -351,7 +395,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   successOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(11,14,19,0.92)',
     alignItems: 'center',
     justifyContent: 'center',

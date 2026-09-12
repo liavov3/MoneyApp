@@ -4,11 +4,13 @@ Extends Quick Add with an optional `merchant_input` (typed merchant text,
 MERCHANT_NORMALIZATION_SPEC §4/§7). Covers:
 - amount-only and amount+category still work (no regression)
 - typed merchant creates a merchant and links it on the transaction
+- pre-resolved merchant_id is ownership-safe and wins over typed text
+- user-confirmed aliases resolve to their canonical merchant
 - response carries merchant_id / merchant_display_name; raw input persisted
 - a case/whitespace variant reuses the SAME merchant (normalized_exact)
 - cross-script / typo inputs do NOT silently merge (separate merchants)
 - client-supplied user_id never owns the merchant or the transaction
-- no merchant_aliases and no category_rules are created in this slice
+- a new merchant gets a low-trust first alias; no category rules are created
 - no PII (merchant text / normalized key / amount) appears in logs
 
 Fresh ephemeral principal per test; all need a migrated DB.
@@ -102,6 +104,50 @@ async def _merchant_row(merchant_id: str):
         ).mappings().one_or_none()
 
 
+async def _seed_merchant(uid: str, normalized: str, display: str) -> str:
+    async with get_sessionmaker()() as s:
+        mid = (
+            await s.execute(
+                text(
+                    "INSERT INTO merchants (user_id, normalized_merchant_name, display_name) "
+                    "VALUES (:u, :n, :d) RETURNING id::text AS id"
+                ),
+                {"u": uid, "n": normalized, "d": display},
+            )
+        ).scalar_one()
+        await s.commit()
+        return mid
+
+
+async def _seed_confirmed_alias(uid: str, mid: str, raw: str, normalized: str) -> None:
+    async with get_sessionmaker()() as s:
+        await s.execute(
+            text(
+                "INSERT INTO merchant_aliases "
+                "(user_id, merchant_id, alias_text, normalized_alias_key, source, confidence) "
+                "VALUES (:u, CAST(:m AS uuid), :raw, :n, 'user_confirmed', "
+                "'user_confirmed')"
+            ),
+            {"u": uid, "m": mid, "raw": raw, "n": normalized},
+        )
+        await s.commit()
+
+
+async def _alias_rows(uid: str) -> list[dict]:
+    async with get_sessionmaker()() as s:
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT merchant_id::text AS merchant_id, alias_text, "
+                    "normalized_alias_key, source, confidence FROM merchant_aliases "
+                    "WHERE user_id = :u ORDER BY created_at"
+                ),
+                {"u": uid},
+            )
+        ).mappings().all()
+        return [dict(r) for r in rows]
+
+
 async def _count(table: str, uid: str) -> int:
     async with get_sessionmaker()() as s:
         return (
@@ -169,6 +215,15 @@ async def test_merchant_input_creates_and_links(principal, migrated: None) -> No
     assert m["display_name"] == "Golda"
     assert m["user_id"] == uid
     assert await _count("merchants", uid) == 1
+    assert await _alias_rows(uid) == [
+        {
+            "merchant_id": txn["merchant_id"],
+            "alias_text": "Golda",
+            "normalized_alias_key": "golda",
+            "source": "system_suggested",
+            "confidence": "none",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -210,6 +265,138 @@ async def test_blank_merchant_input_is_no_merchant(principal, migrated: None) ->
 
 
 # --------------------------------------------------------------------------- #
+# Pre-resolved merchant id and confirmed aliases.
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_valid_merchant_id_links_existing_merchant(principal, migrated: None) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    mid = await _seed_merchant(uid, "golda", "Golda")
+
+    resp = await _quick_add(token, {"amount": "12.00", "merchant_id": mid})
+    assert resp.status_code == 201
+    txn = resp.json()["transaction"]
+    assert txn["merchant_id"] == mid
+    assert txn["merchant_display_name"] == "Golda"
+    assert (await _txn_row(txn["id"]))["raw_merchant_input"] is None
+    assert await _count("merchants", uid) == 1
+
+
+@pytest.mark.asyncio
+async def test_merchant_id_wins_and_typed_text_is_preserved(
+    principal, migrated: None
+) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    mid = await _seed_merchant(uid, "golda", "Golda")
+
+    resp = await _quick_add(
+        token, {"amount": "12.00", "merchant_id": mid, "merchant_input": "  Wolt  "}
+    )
+    assert resp.status_code == 201
+    txn = resp.json()["transaction"]
+    assert txn["merchant_id"] == mid
+    assert txn["merchant_display_name"] == "Golda"
+    assert (await _txn_row(txn["id"]))["raw_merchant_input"] == "  Wolt  "
+    assert await _count("merchants", uid) == 1  # no Wolt merchant was created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("merchant_id", ["not-a-uuid", str(uuid.uuid4())])
+async def test_invalid_or_missing_merchant_id_returns_404(
+    principal, migrated: None, merchant_id: str
+) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    resp = await _quick_add(token, {"amount": "12.00", "merchant_id": merchant_id})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "not_found"
+    assert await _count("transactions", uid) == 0
+
+
+@pytest.mark.asyncio
+async def test_foreign_merchant_id_returns_404(principal, migrated: None) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    other = str(uuid.uuid4())
+    await _ensure_user(other)
+    foreign_mid = await _seed_merchant(other, "foreign", "Foreign")
+
+    resp = await _quick_add(token, {"amount": "12.00", "merchant_id": foreign_mid})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "not_found"
+    assert await _count("transactions", uid) == 0
+
+
+@pytest.mark.asyncio
+async def test_typed_confirmed_alias_resolves_without_duplicate(
+    principal, migrated: None
+) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    mid = await _seed_merchant(uid, "golda", "Golda")
+    await _seed_confirmed_alias(uid, mid, "גולדה", "גולדה")
+
+    resp = await _quick_add(token, {"amount": "12.00", "merchant_input": "גולדה"})
+    assert resp.status_code == 201
+    txn = resp.json()["transaction"]
+    assert txn["merchant_id"] == mid
+    assert txn["merchant_display_name"] == "Golda"
+    assert (await _txn_row(txn["id"]))["raw_merchant_input"] == "גולדה"
+    assert await _count("merchants", uid) == 1
+    assert await _count("merchant_aliases", uid) == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_canonical_precedes_ambiguous_alias_then_alias_precedes_normalized(
+    principal, migrated: None
+) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    canonical = await _seed_merchant(uid, "wolt", "Wolt")
+    aliased = await _seed_merchant(uid, "golda", "Golda")
+    # Cross-table ambiguity is possible: alias keys and canonical keys have
+    # separate uniqueness constraints.
+    await _seed_confirmed_alias(uid, aliased, "wolt", "wolt")
+
+    exact = (
+        await _quick_add(token, {"amount": "5.00", "merchant_input": "Wolt"})
+    ).json()["transaction"]
+    alias_variant = (
+        await _quick_add(token, {"amount": "6.00", "merchant_input": "wolt"})
+    ).json()["transaction"]
+    whitespace_variant = (
+        await _quick_add(token, {"amount": "7.00", "merchant_input": "  Wolt  "})
+    ).json()["transaction"]
+
+    assert exact["merchant_id"] == canonical  # exact canonical wins
+    assert alias_variant["merchant_id"] == aliased  # alias beats normalized canonical
+    assert whitespace_variant["merchant_id"] == aliased
+    assert await _count("merchants", uid) == 2
+
+
+@pytest.mark.asyncio
+async def test_id_only_request_returns_recent_memory_category_suggestion(
+    principal, migrated: None
+) -> None:
+    token, uid = principal
+    await _ensure_user(uid)
+    cat = await _consumer_category()
+    first = (
+        await _quick_add(
+            token, {"amount": "5.00", "merchant_input": "Golda", "category_id": cat}
+        )
+    ).json()["transaction"]
+
+    resp = await _quick_add(token, {"amount": "6.00", "merchant_id": first["merchant_id"]})
+    assert resp.status_code == 201
+    suggestion = resp.json()["category_suggestion"]
+    assert suggestion["category_id"] == cat
+    assert suggestion["source"] == "recent_memory"
+    assert resp.json()["transaction"]["category_id"] is None  # suggest-only
+
+
+# --------------------------------------------------------------------------- #
 # Ownership / scope guards.
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
@@ -228,7 +415,7 @@ async def test_forged_user_id_ignored(principal, migrated: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_aliases_or_rules_created(principal, migrated: None) -> None:
+async def test_initial_alias_but_no_rules_created(principal, migrated: None) -> None:
     token, uid = principal
     await _ensure_user(uid)
     cat = await _consumer_category()
@@ -237,7 +424,9 @@ async def test_no_aliases_or_rules_created(principal, migrated: None) -> None:
             token, {"amount": "9.00", "merchant_input": "Golda", "category_id": cat}
         )
     ).status_code == 201
-    assert await _count("merchant_aliases", uid) == 0  # no alias in this slice
+    aliases = await _alias_rows(uid)
+    assert len(aliases) == 1
+    assert aliases[0]["source"] == "system_suggested"
     assert await _count("category_rules", uid) == 0    # no rule promotion
 
 

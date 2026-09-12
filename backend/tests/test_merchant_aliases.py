@@ -256,11 +256,14 @@ async def test_reconfirm_same_alias_is_idempotent(principal, migrated: None) -> 
     await _ensure_user(uid)
     mid = await _new_merchant(token, "Golda")
 
-    first = await _post_alias(token, mid, {"alias_text": "גולדה"})
-    second = await _post_alias(token, mid, {"alias_text": "גולדה"})
+    # Quick Add's low-trust first alias is upgraded in place, then confirmation
+    # remains idempotent.
+    first = await _post_alias(token, mid, {"alias_text": "Golda"})
+    second = await _post_alias(token, mid, {"alias_text": "Golda"})
     assert first.status_code == 201 and second.status_code == 201
     assert first.json()["alias"]["id"] == second.json()["alias"]["id"]  # same row
-    assert await _alias_count(uid) == 1  # not stacked
+    assert first.json()["alias"]["source"] == "user_confirmed"
+    assert await _alias_count(uid) == 1  # promoted in place, not stacked
 
 
 @pytest.mark.asyncio
@@ -275,7 +278,7 @@ async def test_key_resolving_to_other_merchant_returns_409(principal, migrated: 
     conflict = await _post_alias(token, wolt, {"alias_text": "Variant"})
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "conflict"
-    assert await _alias_count(uid) == 1  # the second was rejected
+    assert await _alias_count(uid) == 3  # two first aliases + Variant; conflict rejected
 
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +306,8 @@ async def test_absorb_repoints_transactions_and_deletes_merchant(
     )
     assert resp.status_code == 201
     body = resp.json()
+    assert body["alias"]["merchant_id"] == golda
+    assert body["alias"]["source"] == "user_confirmed"
     assert body["absorbed_merchant_id"] == dup
     assert body["repointed_transaction_count"] == 2
     # The duplicate is gone; its transactions now point to the canonical merchant.
@@ -349,7 +354,7 @@ async def test_forged_user_id_ignored(principal, migrated: None) -> None:
     )
     assert resp.status_code == 201
     # The alias belongs to the principal, not the forged user.
-    assert await _alias_count(uid) == 1
+    assert await _alias_count(uid) == 2  # first alias + confirmed variant
     assert await _alias_count(other) == 0
 
 

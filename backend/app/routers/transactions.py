@@ -1,9 +1,8 @@
-"""POST /api/v1/transactions/quick-add — create one manual transaction.
+"""Transaction routes, including manual Quick Add (API_CONTRACT §8 / §14).
 
-This slice implements the AMOUNT-ONLY subset of API_CONTRACT §8 / §14: amount is
-the only required field; merchant matching/creation, category assignment, rules,
-duplicate/large-amount warnings, and list/edit/delete are intentionally NOT
-implemented yet. Save-first: a valid amount-only request persists immediately.
+Amount is the only required Quick Add field. Merchant and category are optional;
+merchant text resolves through confirmed aliases / canonical normalization, while
+a client may submit a pre-resolved merchant id. Save-first remains the invariant.
 
 Auth required (API_CONTRACT §3). `user_id` is server-resolved from the dev
 principal — never read from the client body (a client-supplied `user_id` is
@@ -44,8 +43,8 @@ _MAX_FUTURE_DAYS = 1
 
 
 class QuickAddRequest(BaseModel):
-    # Ignore any unknown/forbidden fields (e.g. a client-supplied user_id or the
-    # not-yet-implemented merchant_input/merchant_id) — never trusted.
+    # Ignore any unknown/forbidden fields (e.g. a client-supplied user_id) —
+    # never trusted.
     model_config = ConfigDict(extra="ignore")
 
     # JSON number or decimal string; parsed via Decimal (app/money.py).
@@ -55,12 +54,12 @@ class QuickAddRequest(BaseModel):
     currency: str = "ILS"
     note: str | None = None
     # Optional explicit category (§8). Must be a visible consumer-layer category;
-    # omitted/null -> uncategorized. merchant-driven suggestions are out of scope.
+    # omitted/null -> uncategorized (merchant-driven suggestions remain suggest-only).
     category_id: str | None = None
-    # Optional typed merchant text (§8). Normalized-exact match reuses an existing
-    # merchant, else a new one is created for this user. The pre-resolved
-    # `merchant_id` path (recent chips) is deferred -> still dropped by extra=ignore.
+    # Optional typed merchant text / pre-resolved merchant (§8). merchant_id wins
+    # when both are present; merchant_input is still preserved on the transaction.
     merchant_input: str | None = None
+    merchant_id: str | None = None
 
 
 class TransactionOut(BaseModel):
@@ -129,40 +128,180 @@ _INSERT_SQL = text(
 )
 
 
-# Normalized-exact resolve, else create (MERCHANT_NORMALIZATION_SPEC §7 `none`).
-# ON CONFLICT on the (user_id, normalized_merchant_name) unique key makes this
-# race-safe and idempotent: a repeat input reuses the same row (bumping
-# updated_at for recency) and keeps the FIRST display_name. No fuzzy, no
-# cross-script merge — different scripts produce different keys by construction.
-_MERCHANT_UPSERT = text(
+_RESOLVE_OWNED_MERCHANT = text(
     """
-    INSERT INTO merchants (user_id, normalized_merchant_name, display_name)
-    VALUES (:user_id, :normalized, :display_name)
-    ON CONFLICT (user_id, normalized_merchant_name)
-    DO UPDATE SET updated_at = now()
-    RETURNING id::text AS id, display_name
+    UPDATE merchants
+    SET updated_at = now()
+    WHERE id = CAST(:mid AS uuid) AND user_id = :user_id
+    RETURNING id::text AS id, display_name, normalized_merchant_name
     """
 )
 
 
+_SELECT_MERCHANT_BY_NORMALIZED = text(
+    """
+    SELECT id::text AS id, display_name, normalized_merchant_name
+    FROM merchants
+    WHERE user_id = :user_id AND normalized_merchant_name = :normalized
+    """
+)
+
+
+# Only confirmed aliases are authoritative enough for silent resolution. The CTE
+# also records use of the alias and bumps merchant recency for recent chips.
+_RESOLVE_CONFIRMED_ALIAS = text(
+    """
+    WITH matched AS (
+        UPDATE merchant_aliases
+        SET last_seen_at = now()
+        WHERE user_id = :user_id
+          AND normalized_alias_key = :normalized
+          AND source = 'user_confirmed'
+        RETURNING merchant_id
+    )
+    UPDATE merchants AS m
+    SET updated_at = now()
+    FROM matched
+    WHERE m.id = matched.merchant_id AND m.user_id = :user_id
+    RETURNING m.id::text AS id, m.display_name, m.normalized_merchant_name
+    """
+)
+
+
+# Distinguish a genuine insert so only a newly created merchant receives the raw
+# input as its first, low-trust alias. A normalized-key conflict is handled by
+# _TOUCH_MERCHANT after this INSERT returns no row.
+_INSERT_MERCHANT = text(
+    """
+    INSERT INTO merchants (user_id, normalized_merchant_name, display_name)
+    VALUES (:user_id, :normalized, :display_name)
+    ON CONFLICT (user_id, normalized_merchant_name)
+    DO NOTHING
+    RETURNING id::text AS id, display_name, normalized_merchant_name
+    """
+)
+
+
+_TOUCH_MERCHANT = text(
+    """
+    UPDATE merchants
+    SET updated_at = now()
+    WHERE user_id = :user_id AND normalized_merchant_name = :normalized
+    RETURNING id::text AS id, display_name, normalized_merchant_name
+    """
+)
+
+
+_INSERT_INITIAL_ALIAS = text(
+    """
+    INSERT INTO merchant_aliases
+        (user_id, merchant_id, alias_text, normalized_alias_key, source, confidence)
+    VALUES
+        (:user_id, CAST(:mid AS uuid), :alias_text, :normalized,
+         'system_suggested', 'none')
+    """
+)
+
+
+async def _resolve_owned_merchant(
+    session, merchant_id: str, user_id: str
+) -> tuple[str, str, str]:
+    """Resolve an owned merchant id, hiding malformed/missing/foreign ids as 404."""
+    try:
+        uuid.UUID(merchant_id)
+    except (ValueError, AttributeError, TypeError):
+        raise AppError(code="not_found") from None
+
+    row = (
+        await session.execute(
+            _RESOLVE_OWNED_MERCHANT, {"mid": merchant_id, "user_id": user_id}
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        raise AppError(code="not_found")
+    return row["id"], row["display_name"], row["normalized_merchant_name"]
+
+
 async def _resolve_or_create_merchant(
     session, raw: str, user_id: str
-) -> tuple[str, str] | None:
-    """Return (merchant_id, display_name) for typed text, or None if blank."""
+) -> tuple[str, str, str] | None:
+    """Return (id, display, canonical key) for typed text, or None if blank."""
     normalized = normalize_merchant_name(raw)
     if not normalized:  # whitespace/invisible-only -> treat as no merchant
         return None
+
+    # Frozen confidence ladder: exact canonical > alias_exact > normalized_exact.
+    # Fetch the canonical candidate without touching recency until its level wins.
+    canonical = (
+        await session.execute(
+            _SELECT_MERCHANT_BY_NORMALIZED,
+            {"user_id": user_id, "normalized": normalized},
+        )
+    ).mappings().one_or_none()
+    # Exact means the cleaned-but-otherwise-verbatim input equals the canonical
+    # display. Case or whitespace variants are normalized_exact, so a confirmed
+    # alias_exact may correctly outrank them.
+    if canonical is not None and clean_raw(raw) == canonical["display_name"]:
+        row = (
+            await session.execute(
+                _TOUCH_MERCHANT, {"user_id": user_id, "normalized": normalized}
+            )
+        ).mappings().one()
+        return row["id"], row["display_name"], row["normalized_merchant_name"]
+
+    # A confirmed alias outranks only a normalized (case/spacing variant)
+    # canonical match, never an exact canonical display match.
     row = (
         await session.execute(
-            _MERCHANT_UPSERT,
+            _RESOLVE_CONFIRMED_ALIAS,
+            {
+                "user_id": user_id,
+                "normalized": normalized,
+            },
+        )
+    ).mappings().one_or_none()
+    if row is not None:
+        return row["id"], row["display_name"], row["normalized_merchant_name"]
+
+    if canonical is not None:
+        row = (
+            await session.execute(
+                _TOUCH_MERCHANT, {"user_id": user_id, "normalized": normalized}
+            )
+        ).mappings().one()
+        return row["id"], row["display_name"], row["normalized_merchant_name"]
+
+    row = (
+        await session.execute(
+            _INSERT_MERCHANT,
             {
                 "user_id": user_id,  # server-resolved ONLY
                 "normalized": normalized,
                 "display_name": display_form(raw),
             },
         )
+    ).mappings().one_or_none()
+    if row is not None:
+        # The first alias preserves the typed form without making it trusted
+        # enough to merge distinct merchants silently.
+        await session.execute(
+            _INSERT_INITIAL_ALIAS,
+            {
+                "user_id": user_id,
+                "mid": row["id"],
+                "alias_text": clean_raw(raw),
+                "normalized": normalized,
+            },
+        )
+        return row["id"], row["display_name"], row["normalized_merchant_name"]
+
+    # A same-user canonical merchant already owns this normalized key.
+    row = (
+        await session.execute(
+            _TOUCH_MERCHANT, {"user_id": user_id, "normalized": normalized}
+        )
     ).mappings().one()
-    return row["id"], row["display_name"]
+    return row["id"], row["display_name"], row["normalized_merchant_name"]
 
 
 @router.post(
@@ -193,6 +332,7 @@ async def quick_add(
     category_id = body.category_id  # validated below; None -> uncategorized
     category_key: str | None = None
     merchant_display_name: str | None = None
+    merchant_normalized_name: str | None = None
     category_suggestion: dict | None = None
     params = {
         "user_id": principal.user_id,  # server-resolved ONLY
@@ -214,14 +354,31 @@ async def quick_add(
                 category_key = await _validate_category(
                     session, category_id, principal.user_id
                 )
-            # Resolve/create the merchant for the server-resolved principal, and
-            # preserve the verbatim typed text as raw_merchant_input (audit; §4).
-            if body.merchant_input is not None:
+            # A pre-resolved id wins; otherwise resolve/create from typed text.
+            # Non-blank typed text remains raw audit input even when id wins.
+            if body.merchant_id is not None:
+                (
+                    params["merchant_id"],
+                    merchant_display_name,
+                    merchant_normalized_name,
+                ) = await _resolve_owned_merchant(
+                    session, body.merchant_id, principal.user_id
+                )
+                if (
+                    body.merchant_input is not None
+                    and normalize_merchant_name(body.merchant_input)
+                ):
+                    params["raw_merchant_input"] = clean_raw(body.merchant_input)
+            elif body.merchant_input is not None:
                 resolved = await _resolve_or_create_merchant(
                     session, body.merchant_input, principal.user_id
                 )
                 if resolved is not None:
-                    params["merchant_id"], merchant_display_name = resolved
+                    (
+                        params["merchant_id"],
+                        merchant_display_name,
+                        merchant_normalized_name,
+                    ) = resolved
                     params["raw_merchant_input"] = clean_raw(body.merchant_input)
             # Category suggestion (SUGGEST-ONLY, §9 / contract step 3): when a
             # merchant resolved and the client set no category, surface the rule
@@ -231,7 +388,7 @@ async def quick_add(
                 rules = await fetch_active_rules(session, principal.user_id)
                 memory = await fetch_recent_memory(session, principal.user_id)
                 s_id, s_key, s_src = resolve_suggestion(
-                    rules, normalize_merchant_name(body.merchant_input),
+                    rules, merchant_normalized_name or "",
                     memory=memory.get(params["merchant_id"]),
                 )
                 if s_id is not None:

@@ -7,6 +7,19 @@ are intentionally **not** built yet — the "הוספת הוצאה" button is a 
 
 ## Run
 
+### Expo Go compatibility
+
+The app uses **Expo SDK 57**. Use an Expo Go installation that supports SDK 57.
+For a physical phone, connect it to the computer's Wi-Fi, set
+`EXPO_PUBLIC_API_URL` to the computer's LAN address on port 8000, and start the
+backend from `backend/` with
+`.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+Then run `npm start` from `mobile/` and scan the QR code. The backend health
+endpoint is `/api/v1/health`.
+
+After changing SDK versions, restart Expo with `npx expo start --clear` and
+reopen the project in Expo Go so the old bundle is not reused.
+
 ```bash
 cd mobile
 npm install

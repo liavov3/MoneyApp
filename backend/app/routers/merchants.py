@@ -361,6 +361,16 @@ _INSERT_ALIAS = text(
               created_at, last_seen_at
     """
 )
+_PROMOTE_ALIAS = text(
+    """
+    UPDATE merchant_aliases
+    SET merchant_id = CAST(:mid AS uuid), source = 'user_confirmed',
+        confidence = 'user_confirmed'
+    WHERE id = CAST(:alias_id AS uuid) AND user_id = :user_id
+    RETURNING id::text AS id, merchant_id::text AS merchant_id, source, confidence,
+              created_at, last_seen_at
+    """
+)
 _REPOINT_TXNS = text(
     "UPDATE transactions SET merchant_id = CAST(:mid AS uuid) "
     "WHERE merchant_id = CAST(:absorb AS uuid) AND user_id = :user_id"
@@ -445,9 +455,39 @@ async def create_alias(
                 )
             ).mappings().one_or_none()
             if existing is not None:
-                if existing["merchant_id"] != merchant_id:
+                if existing["merchant_id"] == merchant_id:
+                    # Quick Add preserves a new merchant's first raw form as a
+                    # low-trust system_suggested alias. Explicit confirmation of
+                    # that same alias upgrades it in place.
+                    if existing["source"] != "user_confirmed":
+                        alias_row = (
+                            await session.execute(
+                                _PROMOTE_ALIAS,
+                                {
+                                    "alias_id": existing["id"],
+                                    "mid": merchant_id,
+                                    "user_id": principal.user_id,
+                                },
+                            )
+                        ).mappings().one()
+                    else:
+                        alias_row = existing  # already confirmed -> idempotent
+                elif absorb is not None and existing["merchant_id"] == absorb:
+                    # The only safe cross-merchant transfer is the explicit
+                    # absorb flow: move the duplicate's own first alias to the
+                    # named canonical merchant and promote it as confirmed.
+                    alias_row = (
+                        await session.execute(
+                            _PROMOTE_ALIAS,
+                            {
+                                "alias_id": existing["id"],
+                                "mid": merchant_id,
+                                "user_id": principal.user_id,
+                            },
+                        )
+                    ).mappings().one()
+                else:
                     raise AppError(code="conflict")
-                alias_row = existing  # already points here -> idempotent
             else:
                 alias_row = (
                     await session.execute(
