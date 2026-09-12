@@ -31,20 +31,26 @@ export const hasToken = API_TOKEN.length > 0;
 export class ApiError extends Error {
   status: number;
   code?: string;
-  constructor(message: string, status: number, code?: string) {
+  fieldErrors: Array<{ field: string; code: string }>;
+  constructor(message: string, status: number, code?: string, fieldErrors: Array<{ field: string; code: string }> = []) {
     super(message);
     this.status = status;
     this.code = code;
+    this.fieldErrors = fieldErrors;
   }
+
+  fieldCode(field: string) { return this.fieldErrors.find((item) => item.field === field)?.code; }
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   if (!API_TOKEN) throw new ApiError('missing_token', 401, 'unauthorized');
 
-  let resp: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
   try {
-    resp = await fetch(`${API}${path}`, {
+    const resp = await fetch(`${API}${path}`, {
       method,
+      signal: controller.signal,
       headers: {
         Authorization: `Bearer ${API_TOKEN}`,
         Accept: 'application/json',
@@ -52,22 +58,31 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       },
       body: body ? JSON.stringify(body) : undefined,
     });
-  } catch {
-    // Network/DNS/refused — generic load error (no PII).
-    throw new ApiError('network_error', 0);
-  }
-
-  if (resp.status === 204) return undefined as T;
-  if (!resp.ok) {
-    let code: string | undefined;
-    try {
-      code = (await resp.json())?.error?.code;
-    } catch {
-      /* non-JSON body */
+    if (resp.status === 204) return undefined as T;
+    if (!resp.ok) {
+      let code: string | undefined;
+      let fieldErrors: Array<{ field: string; code: string }> = [];
+      try {
+        const error = (await resp.json())?.error;
+        code = error?.code;
+        if (Array.isArray(error?.field_errors)) fieldErrors = error.field_errors.filter(
+          (item: unknown): item is { field: string; code: string } =>
+            typeof item === 'object' && item !== null && 'field' in item && 'code' in item &&
+            typeof item.field === 'string' && typeof item.code === 'string',
+        ).map(({ field, code }: { field: string; code: string }) => ({ field, code }));
+      } catch {
+        /* Preserve HTTP status even when the error response is not JSON. */
+      }
+      throw new ApiError(`http_${resp.status}`, resp.status, code, fieldErrors);
     }
-    throw new ApiError(`http_${resp.status}`, resp.status, code);
+    return (await resp.json()) as T;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    // No automatic write retry: a lost response may follow a committed save.
+    throw new ApiError('network_error', 0);
+  } finally {
+    clearTimeout(timeout);
   }
-  return (await resp.json()) as T;
 }
 
 export const getHome = (month?: string) =>
@@ -87,11 +102,13 @@ export const getMerchantSuggestions = (query: string, limit = 8) =>
 export const quickAdd = (input: QuickAddInput) =>
   request<QuickAddResponse>('POST', '/transactions/quick-add', input);
 
-export const listTransactions = (params: { month?: string; cursor?: string; limit?: number } = {}) => {
+export const listTransactions = (params: { month?: string; cursor?: string; limit?: number; category_id?: string; uncategorized?: boolean } = {}) => {
   const q = new URLSearchParams();
   if (params.month) q.set('month', params.month);
   if (params.cursor) q.set('cursor', params.cursor);
   if (params.limit) q.set('limit', String(params.limit));
+  if (params.category_id) q.set('category_id', params.category_id);
+  if (params.uncategorized) q.set('uncategorized', 'true');
   const qs = q.toString();
   return request<TransactionListResponse>('GET', `/transactions${qs ? `?${qs}` : ''}`);
 };

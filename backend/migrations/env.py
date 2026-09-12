@@ -23,7 +23,7 @@ if config.config_file_name is not None:
 
 # Inject the externalized DSN (normalized for the asyncpg driver so a DSN
 # pasted from the Neon dashboard — sslmode/channel_binding — connects cleanly).
-config.set_main_option("sqlalchemy.url", get_settings().async_database_url)
+config.set_main_option("sqlalchemy.url", get_settings().async_database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

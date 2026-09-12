@@ -48,9 +48,9 @@ export function dayOfMonth(iso: string): number {
 // Next calendar date (YYYY-MM-DD) that lands on `day` (1–31): this month if the
 // day hasn't passed, else next month; clamped to the target month's length.
 // Used to turn a recurring "יורד בכל חודש ב־X" choice into next_expected_date.
-export function nextDateForDay(day: number): string {
-  const now = new Date();
-  const target = day < now.getDate() ? new Date(now.getFullYear(), now.getMonth() + 1, 1) : now;
+export function nextDateForDay(day: number, now = new Date()): string {
+  const clampedThisMonth = Math.min(day, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
+  const target = clampedThisMonth < now.getDate() ? new Date(now.getFullYear(), now.getMonth() + 1, 1) : now;
   const y = target.getFullYear();
   const m = target.getMonth();
   const lastDay = new Date(y, m + 1, 0).getDate();
@@ -73,7 +73,7 @@ export function shekelToMinor(input: string): number | null {
   if (!/^\d+(\.\d{1,2})?$/.test(s)) return null;
   const [whole, frac = ''] = s.split('.');
   const minor = Number(whole) * 100 + Number((frac + '00').slice(0, 2));
-  return minor > 0 ? minor : null;
+  return Number.isSafeInteger(minor) && minor > 0 ? minor : null;
 }
 
 // Integer agorot -> clean shekel input string for prefilling (e.g. 300050 -> "3000.50").
@@ -87,7 +87,6 @@ export function minorToInput(minor: number): string {
 // Friendly date header for grouped lists: היום / אתמול / "14 ביוני".
 export function dateHeader(iso: string): string {
   if (iso === todayISO()) return 'היום';
-  const d = new Date(iso + 'T00:00:00');
   const yest = new Date();
   yest.setDate(yest.getDate() - 1);
   const yIso = `${yest.getFullYear()}-${String(yest.getMonth() + 1).padStart(2, '0')}-${String(

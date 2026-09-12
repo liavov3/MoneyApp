@@ -21,6 +21,10 @@ export function CategoryChip({
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: !!selected }}
+      aria-selected={!!selected}
       style={({ pressed }) => [
         styles.chip,
         {

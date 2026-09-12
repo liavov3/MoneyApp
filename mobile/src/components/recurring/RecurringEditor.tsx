@@ -2,13 +2,13 @@
 // to monthly in this slice (weekly/yearly are backend-supported but not yet
 // exposed). The chosen day-of-month becomes next_expected_date via nextDateForDay.
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, StyleSheet, View } from 'react-native';
 
 import { ApiError, createRecurring, deleteRecurring, patchRecurring } from '../../api';
-import { dayOfMonth, nextDateForDay } from '../../format';
+import { dayOfMonth, minorToInput, nextDateForDay, shekelToMinor } from '../../format';
 import { colors, font, spacing, weight } from '../../theme';
-import type { TemplateOut } from '../../types';
+import type { PatchTemplateInput, TemplateOut } from '../../types';
 import { useCategories } from '../../useCategories';
 import { CategoryChip } from '../categories/CategoryChip';
 import { AppText, BottomSheet, Button, Input, SegmentedControl } from '../ui';
@@ -36,14 +36,16 @@ export function RecurringEditor({
   const [active, setActive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const busy = useRef(false);
 
   useEffect(() => {
     if (!visible) return;
     setErrorMsg(null);
     setSaving(false);
+    busy.current = false;
     if (template) {
       setName(template.name);
-      setAmount(String(Math.abs(template.amount_minor) / 100));
+      setAmount(minorToInput(template.amount_minor));
       setCategoryId(template.category_id);
       setDay(dayOfMonth(template.next_expected_date));
       setActive(template.is_active);
@@ -56,26 +58,27 @@ export function RecurringEditor({
     }
   }, [visible, template]);
 
-  const amountValue = Number(amount);
-  const canSave = name.trim() !== '' && amount !== '' && amountValue > 0 && !!categoryId && !saving;
+  const amountValue = shekelToMinor(amount);
+  const canSave = name.trim() !== '' && amountValue !== null && !!categoryId && !saving;
 
   const onSave = async () => {
-    if (!canSave || !categoryId) return;
+    if (!canSave || !categoryId || amountValue === null || busy.current) return;
+    busy.current = true;
     setSaving(true);
     setErrorMsg(null);
     try {
       if (template) {
-        await patchRecurring(template.id, {
-          name: name.trim(),
-          amount,
-          category_id: categoryId,
-          next_expected_date: nextDateForDay(day),
-          is_active: active,
-        });
+        const patch: PatchTemplateInput = {};
+        if (name.trim() !== template.name) patch.name = name.trim();
+        if (amountValue !== Math.abs(template.amount_minor)) patch.amount = minorToInput(amountValue);
+        if (categoryId !== template.category_id) patch.category_id = categoryId;
+        if (day !== dayOfMonth(template.next_expected_date)) patch.next_expected_date = nextDateForDay(day);
+        if (active !== template.is_active) patch.is_active = active;
+        if (Object.keys(patch).length > 0) await patchRecurring(template.id, patch);
       } else {
         await createRecurring({
           name: name.trim(),
-          amount,
+          amount: minorToInput(amountValue),
           category_id: categoryId,
           cadence: 'monthly',
           next_expected_date: nextDateForDay(day),
@@ -84,29 +87,37 @@ export function RecurringEditor({
       }
       onSaved();
     } catch (e) {
-      const code = e instanceof ApiError ? e.code : undefined;
+      const code = e instanceof ApiError ? e.fieldCode('amount') ?? e.code : undefined;
       setErrorMsg(
         code === 'too_many_decimals'
           ? 'אפשר עד שתי ספרות אחרי הנקודה.'
           : 'השמירה נכשלה. בדוק את החיבור ונסה שוב.',
       );
+    } finally {
       setSaving(false);
+      busy.current = false;
     }
   };
 
   const onDelete = () => {
-    if (!template) return;
+    if (!template || busy.current) return;
     Alert.alert('מחיקת הוצאה קבועה', 'למחוק את ההתחייבות החודשית?', [
       { text: 'ביטול', style: 'cancel' },
       {
         text: 'מחיקה',
         style: 'destructive',
         onPress: async () => {
+          if (busy.current) return;
+          busy.current = true;
+          setSaving(true);
           try {
             await deleteRecurring(template.id);
             onDeleted();
           } catch {
             Alert.alert('שגיאה', 'המחיקה נכשלה. נסה שוב.');
+          } finally {
+            busy.current = false;
+            setSaving(false);
           }
         },
       },
@@ -116,7 +127,7 @@ export function RecurringEditor({
   return (
     <BottomSheet
       visible={visible}
-      onClose={onClose}
+      onClose={() => { if (!busy.current) onClose(); }}
       title={editing ? 'עריכת הוצאה קבועה' : 'הוצאה קבועה חדשה'}
       dismissOnBackdropPress={false}
     >
@@ -202,7 +213,7 @@ export function RecurringEditor({
           loading={saving}
         />
         {editing ? (
-          <Button title="מחיקה" icon="trash-outline" variant="destructive" onPress={onDelete} />
+          <Button title="מחיקה" icon="trash-outline" variant="destructive" onPress={onDelete} disabled={saving} />
         ) : null}
       </View>
     </BottomSheet>

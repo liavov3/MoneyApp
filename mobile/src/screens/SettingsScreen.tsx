@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { apiBaseUrl, hasToken } from '../api';
 import { AppText, Card, Screen } from '../components/ui';
 import { colors, font, spacing, weight } from '../theme';
+import appConfig from '../../app.json';
 
 function Row({ label, value, ok }: { label: string; value: string; ok?: boolean }) {
   return (
@@ -53,9 +54,7 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
           אודות
         </AppText>
         <Card>
-          <Row label="גרסה" value="MoneySaver 0.0.1" />
-          <View style={styles.divider} />
-          <Row label="Expo SDK" value="54" />
+          <Row label="גרסה" value={`MoneySaver ${appConfig.expo.version}`} />
         </Card>
       </View>
     </Screen>

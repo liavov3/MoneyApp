@@ -23,6 +23,8 @@ backend/.venv/
 
 # Node
 node_modules/
+.preview/
+.expo/
 
 # OS / editor
 .DS_Store

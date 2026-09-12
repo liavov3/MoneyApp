@@ -2,7 +2,7 @@
 // amount, type, category, date, note, and saves via PATCH. Merchant is shown
 // read-only — the backend's PATCH does not accept merchant changes (§9).
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, View } from 'react-native';
 
 import {
@@ -11,9 +11,10 @@ import {
   getTransaction,
   patchTransaction,
 } from '../../api';
-import { formatDateLong, todayISO } from '../../format';
+import { formatDateLong, minorToInput, shekelToMinor, todayISO } from '../../format';
+import { transactionPatch, type EditType } from '../../transactionEdit';
 import { colors, font, radius, spacing, weight } from '../../theme';
-import type { PatchTransactionInput, TransactionOut } from '../../types';
+import type { TransactionOut } from '../../types';
 import { useCategories } from '../../useCategories';
 import { CategoryChip } from '../categories/CategoryChip';
 import {
@@ -25,10 +26,6 @@ import {
   SegmentedControl,
 } from '../ui';
 import { DatePicker } from '../ui/DatePicker';
-
-type Bucket = 'expense' | 'income';
-const bucketOf = (t: string): Bucket => (t === 'income' || t === 'refund' ? 'income' : 'expense');
-const magnitude = (minor: number): string => String(Math.abs(minor) / 100);
 
 export function TransactionEditor({
   txnId,
@@ -47,78 +44,87 @@ export function TransactionEditor({
   const [txn, setTxn] = useState<TransactionOut | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [amount, setAmount] = useState('');
-  const [bucket, setBucket] = useState<Bucket>('expense');
+  const [bucket, setBucket] = useState<EditType>('expense');
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [occurredOn, setOccurredOn] = useState(todayISO());
   const [note, setNote] = useState('');
   const [dateOpen, setDateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const busy = useRef(false);
 
   useEffect(() => {
     if (!visible || !txnId) return;
+    let active = true;
+    busy.current = false;
+    setSaving(false);
+    setDateOpen(false);
     setTxn(null);
     setLoadError(false);
     setErrorMsg(null);
     getTransaction(txnId)
       .then((t) => {
+        if (!active) return;
         setTxn(t);
-        setAmount(magnitude(t.amount_minor));
-        setBucket(bucketOf(t.transaction_type));
+        setAmount(minorToInput(t.amount_minor));
+        setBucket(t.transaction_type as EditType);
         setCategoryId(t.category_id);
         setOccurredOn(t.occurred_on);
         setNote(t.note ?? '');
       })
-      .catch(() => setLoadError(true));
-  }, [visible, txnId]);
+      .catch(() => { if (active) setLoadError(true); });
+    return () => { active = false; };
+  }, [visible, txnId, retry]);
 
   const isIncome = bucket === 'income';
-  const amountValue = Number(amount);
-  const canSave = !!txn && amount !== '' && amountValue > 0 && !saving;
+  const canSave = !!txn && shekelToMinor(amount) !== null && !saving;
 
   const onSave = async () => {
-    if (!canSave || !txn) return; // guards empty/zero + double-submit
+    if (!canSave || !txn || busy.current) return;
+    busy.current = true;
     setSaving(true);
     setErrorMsg(null);
-    const patch: PatchTransactionInput = {
-      amount,
-      occurred_on: occurredOn,
-      note: note.trim() ? note.trim() : null,
-      // Income carries no spending category; expense keeps/clears its own.
-      category_id: isIncome ? null : categoryId,
-    };
-    // Only re-sign when the user actually flipped the type bucket (keeps an
-    // original refund/adjustment intact if untouched).
-    if (bucket !== bucketOf(txn.transaction_type)) patch.transaction_type = bucket;
     try {
-      await patchTransaction(txn.id, patch);
+      const patch = transactionPatch(txn, { amount, type: bucket, categoryId, occurredOn, note });
+      if (Object.keys(patch).length > 0) await patchTransaction(txn.id, patch);
       onSaved();
     } catch (e) {
-      const code = e instanceof ApiError ? e.code : undefined;
+      const code = e instanceof ApiError ? e.fieldCode('amount') ?? e.code : e instanceof Error ? e.message : undefined;
       setErrorMsg(
-        code === 'too_many_decimals'
+        code === 'signed_adjustment'
+          ? 'אפשר לערוך פרטים נוספים, אך שינוי סכום של התאמה שלילית עדיין אינו נתמך.'
+          : code === 'too_many_decimals'
           ? 'אפשר עד שתי ספרות אחרי הנקודה.'
           : code === 'zero_amount'
             ? 'יש להזין סכום גדול מאפס.'
             : 'העדכון נכשל. בדוק את החיבור ונסה שוב.',
       );
+    } finally {
+      busy.current = false;
       setSaving(false);
     }
   };
 
   const onDelete = () => {
-    if (!txn) return;
+    if (!txn || busy.current) return;
     Alert.alert('מחיקת עסקה', 'למחוק את העסקה? פעולה זו אינה הפיכה.', [
       { text: 'ביטול', style: 'cancel' },
       {
         text: 'מחיקה',
         style: 'destructive',
         onPress: async () => {
+          if (busy.current) return;
+          busy.current = true;
+          setSaving(true);
           try {
             await deleteTransaction(txn.id);
             onDeleted();
           } catch {
             Alert.alert('שגיאה', 'מחיקת העסקה נכשלה. נסה שוב.');
+          } finally {
+            busy.current = false;
+            setSaving(false);
           }
         },
       },
@@ -128,13 +134,14 @@ export function TransactionEditor({
   return (
     <BottomSheet
       visible={visible}
-      onClose={onClose}
+      onClose={() => { if (!busy.current) onClose(); }}
       title="עריכת עסקה"
       dismissOnBackdropPress={false}
     >
       {loadError ? (
         <View style={styles.center}>
           <AppText color={colors.textSecondary}>לא הצלחנו לטעון את העסקה.</AppText>
+          <Button title="ניסיון נוסף" onPress={() => setRetry((value) => value + 1)} variant="secondary" />
         </View>
       ) : !txn ? (
         <View style={styles.center}>
@@ -142,13 +149,15 @@ export function TransactionEditor({
         </View>
       ) : (
         <View style={{ gap: spacing.lg, paddingBottom: spacing.md }}>
-          <SegmentedControl<Bucket>
+          <SegmentedControl<EditType>
             value={bucket}
-            onChange={setBucket}
+            onChange={(value) => { if (!busy.current) setBucket(value); }}
             tint={isIncome ? colors.success : colors.accent}
             options={[
               { value: 'expense', label: 'הוצאה', icon: 'arrow-down' },
               { value: 'income', label: 'הכנסה', icon: 'arrow-up' },
+              { value: 'refund', label: 'החזר', icon: 'return-down-back' },
+              ...(txn.transaction_type === 'adjustment' ? [{ value: 'adjustment' as const, label: 'התאמה' }] : []),
             ]}
           />
 
@@ -236,7 +245,7 @@ export function TransactionEditor({
             loading={saving}
             style={isIncome ? { backgroundColor: colors.success } : undefined}
           />
-          <Button title="מחיקת עסקה" icon="trash-outline" variant="destructive" onPress={onDelete} />
+          <Button title="מחיקת עסקה" icon="trash-outline" variant="destructive" onPress={onDelete} disabled={saving} />
         </View>
       )}
 

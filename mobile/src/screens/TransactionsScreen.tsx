@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useState } from 'react';
-import { Pressable, RefreshControl, SectionList, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Pressable, RefreshControl, ScrollView, SectionList, StyleSheet, View } from 'react-native';
 
 import { listTransactions } from '../api';
 import { TransactionListItem } from '../components/transactions/TransactionListItem';
 import { MonthSwitcher } from '../components/ui/MonthSwitcher';
-import { AppText, EmptyState, ErrorState, LoadingState, Screen } from '../components/ui';
+import { AppText, Button, EmptyState, ErrorState, LoadingState, Screen } from '../components/ui';
+import { CategoryChip } from '../components/categories/CategoryChip';
 import { dateHeader, formatMonthLabel } from '../format';
 import { colors, font, spacing, weight } from '../theme';
 import type { TransactionOut } from '../types';
@@ -41,24 +42,74 @@ export function TransactionsScreen({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
-  const { labelOf } = useCategories();
+  const { labelOf, consumer } = useCategories();
+  const [filter, setFilter] = useState<string | null>(null);
+  const [allMonths, setAllMonths] = useState(false);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageError, setPageError] = useState(false);
+  const generation = useRef(0);
+  const pageBusy = useRef(false);
 
   const load = useCallback(async () => {
+    const request = ++generation.current;
+    pageBusy.current = false;
+    setLoadingMore(false);
+    setPageError(false);
+    setCursor(null);
     setError(false);
     try {
-      const res = await listTransactions({ month, limit: 100 });
+      const res = await listTransactions({
+        month: allMonths ? undefined : month, limit: 50,
+        category_id: filter && filter !== 'uncategorized' ? filter : undefined,
+        uncategorized: filter === 'uncategorized',
+      });
+      if (request !== generation.current) return;
       setItems(res.items);
+      setCursor(res.next_cursor);
     } catch {
+      if (request !== generation.current) return;
       setError(true);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (request === generation.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [month]);
+  }, [month, allMonths, filter]);
+
+  const loadMore = async () => {
+    if (!cursor || pageBusy.current || loading || refreshing) return;
+    const request = generation.current;
+    pageBusy.current = true;
+    setLoadingMore(true);
+    setPageError(false);
+    try {
+      const result = await listTransactions({
+        month: allMonths ? undefined : month, limit: 50, cursor,
+        category_id: filter && filter !== 'uncategorized' ? filter : undefined,
+        uncategorized: filter === 'uncategorized',
+      });
+      if (request !== generation.current) return;
+      setItems((previous) => {
+        const ids = new Set(previous.map((item) => item.id));
+        return [...previous, ...result.items.filter((item) => !ids.has(item.id))];
+      });
+      setCursor(result.next_cursor);
+    } catch {
+      if (request === generation.current) setPageError(true);
+    } finally {
+      if (request === generation.current) {
+        pageBusy.current = false;
+        setLoadingMore(false);
+      }
+    }
+  };
 
   useEffect(() => {
     setLoading(true);
     load();
+    return () => { ++generation.current; };
   }, [load, dataVersion]);
 
   const header = (
@@ -71,8 +122,17 @@ export function TransactionsScreen({
           <Ionicons name="menu" size={24} color={colors.textSecondary} />
         </Pressable>
       </View>
-      <View style={{ marginTop: spacing.sm }}>
-        <MonthSwitcher month={month} onChange={onMonthChange} />
+      <View style={{ marginTop: spacing.sm, gap: spacing.sm }}>
+        {!allMonths ? <MonthSwitcher month={month} onChange={onMonthChange} /> : null}
+        <Button title={allMonths ? 'חזרה לחודש הנבחר' : 'כל החודשים'} variant="ghost" onPress={() => setAllMonths((value) => !value)} />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm }}>
+          <CategoryChip categoryKey={null} label="הכול" selected={filter === null} onPress={() => setFilter(null)} />
+          <CategoryChip categoryKey={null} label="ללא קטגוריה" selected={filter === 'uncategorized'} onPress={() => setFilter('uncategorized')} />
+          {consumer.map((category) => (
+            <CategoryChip key={category.id} categoryKey={category.key} label={category.label_he ?? category.label_en}
+              selected={filter === category.id} onPress={() => setFilter(category.id)} />
+          ))}
+        </ScrollView>
       </View>
     </View>
   );
@@ -86,8 +146,8 @@ export function TransactionsScreen({
     body = (
       <EmptyState
         icon="receipt-outline"
-        title={`אין תנועות ב${formatMonthLabel(month)}`}
-        subtitle="תנועות שתוסיף בחודש זה יופיעו כאן."
+        title={filter ? 'אין תנועות בסינון הזה' : allMonths ? 'אין תנועות עדיין' : `אין תנועות ב${formatMonthLabel(month)}`}
+        subtitle={filter ? 'אפשר לבחור קטגוריה אחרת או להציג את הכול.' : 'תנועות שתוסיף יופיעו כאן.'}
       />
     );
   } else {
@@ -98,6 +158,14 @@ export function TransactionsScreen({
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         stickySectionHeadersEnabled={false}
+        onEndReached={() => { if (!pageError) void loadMore(); }}
+        onEndReachedThreshold={0.3}
+        ListFooterComponent={cursor ? (
+          <View style={{ paddingVertical: spacing.md, gap: spacing.sm }}>
+            {pageError ? <AppText color={colors.danger}>טעינת תנועות נוספות נכשלה. התנועות שכבר נטענו נשמרו.</AppText> : null}
+            <Button title={pageError ? 'ניסיון נוסף' : 'טעינת תנועות נוספות'} onPress={loadMore} loading={loadingMore} variant="ghost" />
+          </View>
+        ) : null}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

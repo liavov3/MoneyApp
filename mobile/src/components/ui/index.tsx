@@ -134,6 +134,9 @@ export function Button({
     <Pressable
       onPress={onPress}
       disabled={disabled || loading}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityState={{ disabled: !!(disabled || loading), busy: !!loading }}
       style={({ pressed }) => [
         styles.button,
         { backgroundColor: bg, borderColor: border, opacity: disabled ? 0.45 : pressed ? 0.85 : 1 },
@@ -172,7 +175,7 @@ export function Input(
         {...rest}
       />
       {onClear && value ? (
-        <Pressable onPress={onClear} hitSlop={8}>
+        <Pressable onPress={onClear} disabled={props.editable === false} accessibilityRole="button" accessibilityLabel="ניקוי שדה" hitSlop={8}>
           <Ionicons name="close-circle" size={18} color={colors.textMuted} />
         </Pressable>
       ) : null}
@@ -189,11 +192,13 @@ export function SegmentedControl<T extends string>({
   value,
   onChange,
   tint = colors.accent,
+  disabled = false,
 }: {
   options: { value: T; label: string; icon?: keyof typeof Ionicons.glyphMap }[];
   value: T;
   onChange: (v: T) => void;
   tint?: string;
+  disabled?: boolean;
 }) {
   return (
     <View style={styles.segment}>
@@ -203,6 +208,11 @@ export function SegmentedControl<T extends string>({
           <Pressable
             key={o.value}
             onPress={() => onChange(o.value)}
+            disabled={disabled}
+            accessibilityRole="radio"
+            accessibilityLabel={o.label}
+            accessibilityState={{ checked: active, disabled }}
+            aria-checked={active}
             style={[styles.segmentItem, active && { backgroundColor: tint }]}
           >
             {o.icon ? (

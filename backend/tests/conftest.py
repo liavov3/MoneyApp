@@ -64,6 +64,26 @@ async def _db_reachable(url: str) -> bool:
 
 
 @pytest.fixture(scope="session")
+def test_database_target():
+    """Use the same resolved test database for engines, app routes and Alembic."""
+    target = _db_url()
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = target
+    get_settings.cache_clear()
+    yield target
+    if previous is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = previous
+    get_settings.cache_clear()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _align_test_database(test_database_target):
+    return test_database_target
+
+
+@pytest.fixture(scope="session")
 def db_available() -> bool:
     try:
         return asyncio.run(_db_reachable(_db_url()))
@@ -89,6 +109,7 @@ def migrated(require_db: None) -> None:
         cwd=BACKEND_DIR,
         capture_output=True,
         text=True,
+        env={**os.environ, "DATABASE_URL": _db_url()},
     )
     if result.returncode != 0:
         pytest.fail(

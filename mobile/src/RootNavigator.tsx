@@ -108,6 +108,7 @@ export function RootNavigator() {
       </Modal>
 
       <TransactionEditor
+        key={editTxnId ?? 'closed'}
         txnId={editTxnId}
         visible={editTxnId !== null}
         onClose={() => setEditTxnId(null)}
@@ -118,7 +119,7 @@ export function RootNavigator() {
       <MenuSheet
         visible={menuOpen}
         onClose={() => setMenuOpen(false)}
-        onHome={() => { setTab('home'); setSettingsOpen(false); setRecurringOpen(false); }}
+        onHome={() => { setTab('home'); setSettingsOpen(false); setRecurringOpen(false); setGoalsOpen(false); }}
         onRecurring={() => setRecurringOpen(true)}
         onGoal={() => setGoalsOpen(true)}
         onSettings={() => setSettingsOpen(true)}

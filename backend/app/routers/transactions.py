@@ -490,14 +490,15 @@ def _row_to_transaction_out(r) -> TransactionOut:
 def _month_bounds(month: str) -> tuple[date, date]:
     """Return [start, end) dates for a `YYYY-MM` month, or raise 422."""
     parts = month.split("-")
-    if len(parts) != 2 or len(parts[0]) != 4 or len(parts[1]) != 2:
+    if (len(parts) != 2 or len(parts[0]) != 4 or len(parts[1]) != 2
+            or not all(part.isascii() and part.isdigit() for part in parts)):
         raise _field_error("month", "invalid_month", "Use YYYY-MM.")
     try:
         year, mon = int(parts[0]), int(parts[1])
         start = date(year, mon, 1)
+        end = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
     except (ValueError, TypeError):
         raise _field_error("month", "invalid_month", "Use YYYY-MM.") from None
-    end = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
     return start, end
 
 
@@ -518,12 +519,16 @@ def _decode_cursor(cursor: str) -> tuple[date, datetime, str]:
     try:
         raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
         data = json.loads(raw)
+        created_at = datetime.fromisoformat(str(data["c"]))
+        if created_at.tzinfo is None or created_at.utcoffset() is None:
+            raise ValueError("Timezone required")
+        txn_id = str(uuid.UUID(str(data["id"])))
         return (
             date.fromisoformat(str(data["o"])),
-            datetime.fromisoformat(str(data["c"])),
-            str(data["id"]),
+            created_at,
+            txn_id,
         )
-    except (binascii.Error, ValueError, KeyError, TypeError):
+    except (binascii.Error, ValueError, KeyError, TypeError, UnicodeError):
         raise _field_error("cursor", "invalid_cursor", "Invalid cursor.") from None
 
 
@@ -562,6 +567,10 @@ async def list_transactions(
     if uncategorized:
         where.append("t.category_id IS NULL")
     elif category_id is not None:
+        try:
+            uuid.UUID(category_id)
+        except (ValueError, TypeError, AttributeError):
+            raise _field_error("category_id", "invalid_category", "Unknown category.") from None
         where.append("t.category_id = CAST(:category_id AS uuid)")
         params["category_id"] = category_id
 

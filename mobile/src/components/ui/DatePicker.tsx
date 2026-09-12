@@ -2,7 +2,7 @@
 // for a transaction's occurred_on. Future days are disabled (the backend rejects
 // a future occurred_on). RTL: weekday columns read right-to-left naturally.
 import { Ionicons } from '@expo/vector-icons';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { formatMonthLabel, todayISO } from '../../format';
@@ -31,6 +31,9 @@ export function DatePicker({
   const [vy, vm] = value.split('-').map(Number);
   const [view, setView] = useState({ y: vy, m: vm - 1 });
   const today = todayISO();
+  useEffect(() => {
+    if (visible) setView({ y: vy, m: vm - 1 });
+  }, [visible, vy, vm]);
 
   const first = new Date(view.y, view.m, 1).getDay();
   const daysInMonth = new Date(view.y, view.m + 1, 0).getDate();

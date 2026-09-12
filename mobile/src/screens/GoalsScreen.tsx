@@ -2,7 +2,7 @@
 // a pinned footer View (Save button), so the button is always reachable above
 // the keyboard. Explicit back button — no accidental tap-outside close.
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -14,7 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ApiError, deleteMonthlyGoal, getMonthlyGoals, putMonthlyGoal } from '../api';
-import { AppText, Button, Input, Screen, SegmentedControl } from '../components/ui';
+import { AppText, Button, ErrorState, Input, LoadingState, Screen, SegmentedControl } from '../components/ui';
 import { formatAmount, formatMonthLabel, minorToInput, shekelToMinor } from '../format';
 import { colors, font, spacing, weight } from '../theme';
 import type { GoalScope, GoalType, MonthlyGoalsResponse } from '../types';
@@ -36,12 +36,27 @@ export function GoalsScreen({
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const busy = useRef(false);
+  const generation = useRef(0);
 
   const load = useCallback(async () => {
-    try { setData(await getMonthlyGoals(month)); } catch {}
+    const request = ++generation.current;
+    setLoadError(false);
+    try {
+      const result = await getMonthlyGoals(month);
+      if (request === generation.current) setData(result);
+      return true;
+    } catch {
+      if (request === generation.current) setLoadError(true);
+      return false;
+    } finally {
+      if (request === generation.current) setLoading(false);
+    }
   }, [month]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); return () => { ++generation.current; }; }, [load]);
 
   // Clear status flags when the user changes a selector (not on data refresh)
   useEffect(() => {
@@ -61,15 +76,17 @@ export function GoalsScreen({
   const hasOverride = currentItem?.override_amount_minor != null;
   const eff = currentItem?.effective_amount_minor ?? null;
   const effSrc = currentItem?.effective_source ?? null;
-  const canSave = shekelToMinor(input) !== null && !saving;
+  const canSave = !!data && !loadError && shekelToMinor(input) !== null && !saving;
 
   const onSave = async () => {
+    if (busy.current || !canSave) return;
     const minor = shekelToMinor(input);
     if (minor === null) {
       setErrorMsg('הזן סכום חוקי (גדול מאפס).');
       return;
     }
     setSaving(true);
+    busy.current = true;
     setErrorMsg(null);
     try {
       await putMonthlyGoal({
@@ -78,8 +95,8 @@ export function GoalsScreen({
         ...(scope === 'month_override' ? { month } : {}),
         amount_minor: minor,
       });
-      await load(); // refresh so effective hint + prefill update
-      setSaved(true);
+      const refreshed = await load();
+      setSaved(refreshed);
       onChanged();
     } catch (e) {
       const code = e instanceof ApiError ? e.code : undefined;
@@ -90,24 +107,40 @@ export function GoalsScreen({
       );
     } finally {
       setSaving(false);
+      busy.current = false;
     }
   };
 
   const onRemoveOverride = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setSaving(true);
+    setSaved(false);
+    setErrorMsg(null);
     try {
       await deleteMonthlyGoal({ goal_type: goalType, scope: 'month_override', month });
       await load();
       onChanged();
     } catch {
       setErrorMsg('לא ניתן היה להסיר את ההתאמה.');
+    } finally {
+      busy.current = false;
+      setSaving(false);
     }
   };
+
+  if (loading || loadError) return (
+    <Screen>
+      <Button title="חזרה" variant="ghost" onPress={onBack} />
+      {loading ? <LoadingState /> : <ErrorState onRetry={() => { setLoading(true); void load(); }} />}
+    </Screen>
+  );
 
   return (
     <Screen>
       {/* Header — mirrors SettingsScreen / RecurringScreen header */}
       <View style={styles.header}>
-        <Pressable onPress={onBack} hitSlop={10} style={styles.iconBtn}>
+        <Pressable onPress={onBack} disabled={saving} accessibilityLabel="חזרה" hitSlop={10} style={styles.iconBtn}>
           <Ionicons name="chevron-forward" size={24} color={colors.textSecondary} />
         </Pressable>
         <AppText size={font.h1} weight={weight.bold}>
@@ -142,6 +175,7 @@ export function GoalsScreen({
             </AppText>
             <SegmentedControl<GoalType>
               value={goalType}
+              disabled={saving}
               onChange={setGoalType}
               options={[
                 { value: 'expense', label: 'הוצאות' },
@@ -158,6 +192,7 @@ export function GoalsScreen({
             </AppText>
             <SegmentedControl<GoalScope>
               value={scope}
+              disabled={saving}
               onChange={setScope}
               options={[
                 { value: 'default', label: 'לכל החודשים' },
@@ -176,7 +211,8 @@ export function GoalsScreen({
               keyboardType="decimal-pad"
               placeholder="0"
               value={input}
-              onChangeText={setInput}
+              editable={!saving}
+              onChangeText={(value) => { setInput(value); setSaved(false); }}
               onClear={() => setInput('')}
             />
           </View>
@@ -206,6 +242,7 @@ export function GoalsScreen({
               title="הסר התאמה לחודש זה"
               variant="ghost"
               onPress={onRemoveOverride}
+              disabled={saving}
             />
           ) : null}
         </ScrollView>

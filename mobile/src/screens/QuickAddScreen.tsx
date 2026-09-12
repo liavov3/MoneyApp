@@ -15,14 +15,14 @@ import { CategoryChip } from '../components/categories/CategoryChip';
 import { MerchantSuggestionChip } from '../components/merchants/MerchantSuggestionChip';
 import { AppText, Button, Input, SegmentedControl } from '../components/ui';
 import { DatePicker } from '../components/ui/DatePicker';
-import { formatDateLong, todayISO } from '../format';
+import { formatDateLong, minorToInput, shekelToMinor, todayISO } from '../format';
 import { colors, font, radius, spacing, weight } from '../theme';
 import type { MerchantSuggestion, RecentMerchant } from '../types';
 import { useCategories } from '../useCategories';
 
-type TxnType = 'expense' | 'income';
+type TxnType = 'expense' | 'income' | 'refund';
 // Common income sources — tapped into the name field (becomes merchant_input).
-const INCOME_SOURCES = ['משכורת', 'החזר', 'מתנה', 'עבודה', 'בונוס'];
+const INCOME_SOURCES = ['משכורת', 'מתנה', 'עבודה', 'בונוס'];
 
 export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
   const insets = useSafeAreaInsets();
@@ -41,6 +41,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
   const [saved, setSaved] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const busy = useRef(false);
 
   const isIncome = txnType === 'income';
 
@@ -103,11 +104,12 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
     if (!isIncome && suggestedCategoryId && !categoryId) setCategoryId(suggestedCategoryId);
   };
 
-  const amountValue = Number(amount);
-  const canSave = amount !== '' && amountValue > 0 && !saving && !saved;
+  const amountValue = shekelToMinor(amount);
+  const canSave = amountValue !== null && !saving && !saved;
 
   const onSave = async () => {
-    if (!canSave) return;
+    if (!canSave || amountValue === null || busy.current) return;
+    busy.current = true;
     setSaving(true);
     setErrorMsg(null);
     try {
@@ -115,7 +117,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
       // from transaction_type (expense → negative, income → positive). §14.
       const hasMerchantInput = merchant.trim().length > 0;
       await quickAdd({
-        amount,
+        amount: minorToInput(amountValue),
         transaction_type: txnType,
         occurred_on: occurredOn,
         ...(selectedMerchantId ? { merchant_id: selectedMerchantId } : {}),
@@ -127,15 +129,20 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
       setSaved(true);
       onAdded();
     } catch (e) {
-      const code = e instanceof ApiError ? e.code : undefined;
+      const code = e instanceof ApiError ? e.fieldCode('amount') ?? e.code : undefined;
       setErrorMsg(
-        code === 'too_many_decimals'
+        e instanceof ApiError && e.status === 0
+          ? 'לא התקבל אישור שמירה. בדוק את העסקאות לפני ניסיון נוסף כדי למנוע כפילות.'
+          : e instanceof ApiError && e.status === 401
+            ? 'החיבור לאפליקציה דורש אימות מחדש. הפרטים שהזנת נשמרו כאן.'
+          : code === 'too_many_decimals'
           ? 'אפשר עד שתי ספרות אחרי הנקודה.'
           : code === 'zero_amount'
             ? 'יש להזין סכום גדול מאפס.'
             : 'השמירה נכשלה. בדוק את החיבור ונסה שוב.',
       );
       setSaving(false);
+      busy.current = false;
     }
   };
 
@@ -147,11 +154,11 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
     <View style={[styles.root, { paddingTop: insets.top }]}>
       {/* [A] Header */}
       <View style={styles.header}>
-        <Pressable onPress={onClose} hitSlop={10} style={styles.close}>
+        <Pressable onPress={onClose} disabled={saving} accessibilityLabel="סגירה" hitSlop={10} style={styles.close}>
           <Ionicons name="close" size={26} color={colors.textSecondary} />
         </Pressable>
         <AppText size={font.title} weight={weight.semibold}>
-          {isIncome ? 'הכנסה חדשה' : 'הוצאה חדשה'}
+          {isIncome ? 'הכנסה חדשה' : txnType === 'refund' ? 'החזר חדש' : 'הוצאה חדשה'}
         </AppText>
         <View style={styles.close} />
       </View>
@@ -162,6 +169,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
         <View style={styles.toggle}>
           <SegmentedControl<TxnType>
             value={txnType}
+            disabled={saving}
             onChange={(v) => {
               setTxnType(v);
               if (v === 'income') {
@@ -174,6 +182,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
             options={[
               { value: 'expense', label: 'הוצאה', icon: 'arrow-down' },
               { value: 'income', label: 'הכנסה', icon: 'arrow-up' },
+              { value: 'refund', label: 'החזר', icon: 'return-down-back' },
             ]}
           />
         </View>
@@ -194,12 +203,18 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
               iconLeft="cash-outline"
               placeholder="0"
               value={amount}
+              editable={!saving}
               onChangeText={setAmount}
               keyboardType="decimal-pad"
               returnKeyType="done"
               onClear={() => setAmount('')}
               autoFocus
             />
+            {amount.trim() !== '' && amountValue === null ? (
+              <AppText size={font.caption} color={colors.danger} style={{ marginTop: spacing.xs }}>
+                יש להזין סכום גדול מאפס, עם עד שתי ספרות אחרי הנקודה.
+              </AppText>
+            ) : null}
           </View>
 
           {/* [B2-2] Merchant block */}
