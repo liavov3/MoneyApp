@@ -754,20 +754,21 @@ async def delete_transaction(
 # PATCH /transactions/{id} — partial edit, ownership-scoped (API_CONTRACT §9).
 # =========================================================================== #
 
-# Editable in THIS slice: amount, transaction_type, occurred_on, note,
-# category_id (null clears). The contract's merchant_id/merchant_input require
-# merchant resolution (a later slice) — dropped via extra="ignore", same as
-# Quick Add, so a client sending them today is a no-op rather than an error.
-_EDITABLE_FIELDS = {"amount", "transaction_type", "occurred_on", "note", "category_id"}
+# Merchant edits share Quick Add's trusted identity ladder. Category changes
+# remain explicit, and editing a merchant never silently promotes a rule.
+_EDITABLE_FIELDS = {
+    "amount", "transaction_type", "occurred_on", "note", "category_id",
+    "merchant_id", "merchant_input",
+}
 
 _SELECT_FOR_PATCH = text(
     "SELECT transaction_type, amount_minor FROM transactions "
-    "WHERE id = :id AND user_id = :user_id"
+    "WHERE id = :id AND user_id = :user_id FOR UPDATE"
 )
 
 
 class PatchRequest(BaseModel):
-    # extra="ignore": unknown/forbidden fields (client user_id, merchant_*) are
+    # extra="ignore": unknown/forbidden fields (including client user_id) are
     # never trusted. model_fields_set then tells provided-vs-omitted apart so a
     # `null` (clear) is distinct from an absent field (leave unchanged).
     model_config = ConfigDict(extra="ignore")
@@ -777,6 +778,9 @@ class PatchRequest(BaseModel):
     occurred_on: str | None = None
     note: str | None = None
     category_id: str | None = None
+
+    merchant_id: str | None = None
+    merchant_input: str | None = None
 
 
 async def _validate_category(session, category_id: str, user_id: str) -> str:
@@ -885,12 +889,30 @@ async def patch_transaction(
             if "category_id" in provided:
                 updates["category_id"] = body.category_id  # validated; None clears
 
+            if "merchant_id" in provided:
+                # Explicit null clears the merchant; otherwise only an owned id
+                # is accepted. This takes precedence over any submitted text.
+                updates["merchant_id"] = None
+                if body.merchant_id is not None:
+                    resolved = await _resolve_owned_merchant(session, body.merchant_id, principal.user_id)
+                    updates["merchant_id"] = resolved[0]
+            elif "merchant_input" in provided and body.merchant_input is not None:
+                resolved = await _resolve_or_create_merchant(session, body.merchant_input, principal.user_id)
+                updates["merchant_id"] = resolved[0] if resolved else None
+
+            if "merchant_input" in provided:
+                updates["raw_merchant_input"] = (
+                    clean_raw(body.merchant_input)
+                    if body.merchant_input is not None and normalize_merchant_name(body.merchant_input)
+                    else None
+                )
+
             # --- build + run the UPDATE (column names are server-controlled) - #
             set_parts = ["updated_at = now()"]
             params: dict[str, object] = {"id": transaction_id, "user_id": principal.user_id}
             for col, val in updates.items():
                 # uuid column needs an explicit cast for the asyncpg string bind.
-                placeholder = "CAST(:category_id AS uuid)" if col == "category_id" else f":{col}"
+                placeholder = f"CAST(:{col} AS uuid)" if col in {"category_id", "merchant_id"} else f":{col}"
                 set_parts.append(f"{col} = {placeholder}")
                 params[col] = val
             await session.execute(

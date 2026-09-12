@@ -7,6 +7,7 @@ import { TransactionListItem } from '../components/transactions/TransactionListI
 import { MonthSwitcher } from '../components/ui/MonthSwitcher';
 import { AppText, Button, EmptyState, ErrorState, LoadingState, Screen } from '../components/ui';
 import { CategoryChip } from '../components/categories/CategoryChip';
+import { CategoryStatus } from '../components/categories/CategoryStatus';
 import { dateHeader, formatMonthLabel } from '../format';
 import { colors, font, spacing, weight } from '../theme';
 import type { TransactionOut } from '../types';
@@ -195,6 +196,7 @@ export function TransactionsScreen({
   return (
     <Screen>
       {header}
+      <CategoryStatus />
       {body}
     </Screen>
   );

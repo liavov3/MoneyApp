@@ -11,6 +11,7 @@ import { colors, font, spacing, weight } from '../../theme';
 import type { PatchTemplateInput, TemplateOut } from '../../types';
 import { useCategories } from '../../useCategories';
 import { CategoryChip } from '../categories/CategoryChip';
+import { CategoryStatus } from '../categories/CategoryStatus';
 import { AppText, BottomSheet, Button, Input, SegmentedControl } from '../ui';
 import { DayOfMonthPicker } from './DayOfMonthPicker';
 
@@ -174,6 +175,7 @@ export function RecurringEditor({
               />
             ))}
           </View>
+          <CategoryStatus />
         </View>
 
         <View>

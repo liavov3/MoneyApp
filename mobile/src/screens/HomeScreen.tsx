@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
 import { getHome, getMonthlyGoals, listTransactions } from '../api';
@@ -41,8 +41,10 @@ export function HomeScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
   const { labelOf } = useCategories();
+  const generation = useRef(0);
 
   const load = useCallback(async () => {
+    const request = ++generation.current;
     setError(false);
     try {
       const [home, txns, g] = await Promise.all([
@@ -50,6 +52,7 @@ export function HomeScreen({
         listTransactions({ month, limit: 100 }),
         getMonthlyGoals(month).catch(() => null), // goal failure is non-fatal
       ]);
+      if (request !== generation.current) return;
       setData(home);
       setGoal(g);
       let income = 0;
@@ -61,16 +64,19 @@ export function HomeScreen({
       setIncomeMinor(income);
       setNetMinor(net);
     } catch {
-      setError(true);
+      if (request === generation.current) setError(true);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (request === generation.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [month]);
 
   useEffect(() => {
     setLoading(true);
     load();
+    return () => { ++generation.current; };
   }, [load, dataVersion]);
 
   const header = (

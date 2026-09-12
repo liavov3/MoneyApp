@@ -19,6 +19,7 @@ need no DB; the rest require a migrated DB (categories seeded by 0002).
 from __future__ import annotations
 
 import logging
+import asyncio
 import uuid
 
 import pytest
@@ -182,6 +183,103 @@ async def test_empty_body_returns_validation_error(principal) -> None:
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "validation_error"
     assert _field_code(resp) == "empty_patch"
+
+
+async def test_merchant_text_edit_preserves_financial_fields_and_other_rows(principal, migrated):
+    token, uid = principal
+    await _ensure_user(uid)
+    category = await _category_id("consumer_spending")
+    first = (await _quick_add(token, {"amount": "33.50", "merchant_input": "Original Store", "category_id": category})).json()["transaction"]
+    second = (await _quick_add(token, {"amount": "10", "merchant_id": first["merchant_id"]})).json()["transaction"]
+    response = await _patch(token, first["id"], {"merchant_input": "Replacement Store"})
+    assert response.status_code == 200
+    changed = response.json()
+    assert changed["merchant_display_name"] == "Replacement Store"
+    assert changed["merchant_id"] != first["merchant_id"]
+    for field in ("amount_minor", "transaction_type", "category_id", "occurred_on", "created_at"):
+        assert changed[field] == first[field]
+    async with get_sessionmaker()() as s:
+        other = (await s.execute(text("SELECT merchant_id::text FROM transactions WHERE id=CAST(:id AS uuid)"), {"id": second["id"]})).scalar_one()
+        assert other == first["merchant_id"]
+        assert (await s.execute(text("SELECT count(*) FROM category_rules WHERE user_id=:u"), {"u": uid})).scalar_one() == 0
+    assert "raw_merchant_input" not in changed
+
+
+async def test_merchant_edit_reuses_owned_identity_and_can_clear(principal, migrated):
+    token, uid = principal
+    await _ensure_user(uid)
+    existing = (await _quick_add(token, {"amount": "2", "merchant_input": "Known Store"})).json()["transaction"]
+    tid = await _insert_txn(uid, -505)
+    response = await _patch(token, tid, {"merchant_input": "  KNOWN STORE  "})
+    assert response.status_code == 200
+    assert response.json()["merchant_id"] == existing["merchant_id"]
+    response = await _patch(token, tid, {"merchant_id": None})
+    assert response.status_code == 200
+    assert response.json()["merchant_id"] is None
+    assert response.json()["merchant_display_name"] is None
+    assert response.json()["amount_minor"] == -505
+
+
+async def test_explicit_merchant_id_and_clear_take_precedence_over_text(principal, migrated):
+    token, uid = principal
+    await _ensure_user(uid)
+    owned = (await _quick_add(token, {"amount": "1", "merchant_input": "Selected Store"})).json()["transaction"]
+    tid = await _insert_txn(uid, -707)
+    response = await _patch(token, tid, {"merchant_id": owned["merchant_id"], "merchant_input": "Unused Display"})
+    assert response.status_code == 200
+    assert response.json()["merchant_id"] == owned["merchant_id"]
+    response = await _patch(token, tid, {"merchant_id": None, "merchant_input": "Must Not Create"})
+    assert response.status_code == 200
+    assert response.json()["merchant_id"] is None
+    async with get_sessionmaker()() as s:
+        assert (await s.execute(text("SELECT count(*) FROM merchants WHERE user_id=:u"), {"u": uid})).scalar_one() == 1
+
+
+async def test_foreign_merchant_edit_is_404_and_changes_nothing(principal, migrated):
+    token, uid = principal
+    await _ensure_user(uid)
+    foreign = str(uuid.uuid4())
+    await _ensure_user(foreign)
+    async with get_sessionmaker()() as s:
+        mid = (await s.execute(text("INSERT INTO merchants (user_id,display_name,normalized_merchant_name) VALUES (:u,'Foreign','foreign') RETURNING id::text"), {"u": foreign})).scalar_one()
+        await s.commit()
+    tid = await _insert_txn(uid, -303)
+    before = dict(await _raw_row(tid))
+    _assert_404(await _patch(token, tid, {"merchant_id": mid, "note": "must not save"}))
+    assert dict(await _raw_row(tid)) == before
+
+
+@pytest.mark.parametrize("merchant_id", ["invalid-uuid", "00000000-0000-0000-0000-000000000000"])
+async def test_invalid_or_missing_merchant_edit_is_404(principal, migrated, merchant_id):
+    token, uid = principal
+    await _ensure_user(uid)
+    tid = await _insert_txn(uid, -202)
+    _assert_404(await _patch(token, tid, {"merchant_id": merchant_id}))
+
+
+async def test_failed_amount_edit_does_not_create_a_merchant(principal, migrated):
+    token, uid = principal
+    await _ensure_user(uid)
+    tid = await _insert_txn(uid, -100)
+    response = await _patch(token, tid, {"merchant_input": "Must Roll Back", "amount": "1.001"})
+    assert response.status_code == 422
+    async with get_sessionmaker()() as s:
+        assert (await s.execute(text("SELECT count(*) FROM merchants WHERE user_id=:u"), {"u": uid})).scalar_one() == 0
+    assert (await _raw_row(tid))["amount_minor"] == -100
+
+
+async def test_concurrent_amount_and_type_edits_keep_the_final_sign(principal, migrated):
+    token, uid = principal
+    await _ensure_user(uid)
+    tid = await _insert_txn(uid, -100)
+    responses = await asyncio.gather(
+        _patch(token, tid, {"amount": "34.01"}),
+        _patch(token, tid, {"transaction_type": "income"}),
+    )
+    assert all(response.status_code == 200 for response in responses)
+    row = await _raw_row(tid)
+    assert row["amount_minor"] == 3401
+    assert row["transaction_type"] == "income"
 
 
 # --------------------------------------------------------------------------- #

@@ -1,29 +1,18 @@
 // Shared, module-cached category list (key -> Hebrew label + the consumer set
 // for the picker). Categories are static/seeded, so fetch once per app run.
-import { useEffect, useState } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 
 import { getCategories } from './api';
-import type { CategoryOut } from './types';
+import { createCategoryStore } from './categoryStore';
 
-let cache: CategoryOut[] | null = null;
+const store = createCategoryStore(async () => (await getCategories()).items);
 
 export function useCategories() {
-  const [cats, setCats] = useState<CategoryOut[] | null>(cache);
+  const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const cats = state.items;
 
   useEffect(() => {
-    if (cache) return;
-    let alive = true;
-    getCategories()
-      .then((r) => {
-        cache = r.items;
-        if (alive) setCats(cache);
-      })
-      .catch(() => {
-        /* labels just fall back to the key; not fatal for the dashboard */
-      });
-    return () => {
-      alive = false;
-    };
+    if (!store.getSnapshot().items && !store.getSnapshot().error) void store.reload();
   }, []);
 
   const labelOf = (key: string | null | undefined): string =>
@@ -31,5 +20,5 @@ export function useCategories() {
 
   const consumer = (cats ?? []).filter((c) => c.layer === 'consumer_spending');
 
-  return { labelOf, consumer, ready: !!cats };
+  return { labelOf, consumer, ready: !!cats, loading: state.loading, error: state.error, reload: store.reload };
 }

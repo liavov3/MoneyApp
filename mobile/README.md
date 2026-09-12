@@ -13,6 +13,10 @@ Expo SDK 57 / React Native, with Hebrew copy, RTL layouts and a dark theme.
 - Transaction editing preserves untouched fields, refund categories and types,
   and negative adjustments. The current API cannot change negative adjustment
   amounts; the editor explains this instead of reversing their sign.
+- A transaction's merchant can be changed or cleared without renaming the
+  merchant on other transactions or silently changing the category.
+- Failed category loads offer a retry that keeps the current entry draft.
+  Switching months ignores delayed responses for previously selected months.
 - Recurring commitments can be created, edited, deactivated, and deleted.
   Editing unrelated details preserves the existing expected date.
 - Expense, income, and savings goals support defaults and month overrides.
@@ -54,9 +58,9 @@ npm test
 npx expo export --platform ios --platform android
 ```
 
-The regression tests run the actual pure TypeScript money/edit helpers and API
-client through Node's test runner. They do not replace device testing. Browser
-previews can exercise shared screens; native keyboard, safe-area, accessibility,
+The regression tests run the actual TypeScript money/edit helpers, shared
+category store, and API client through Node's test runner. They do not replace
+device testing. Browser previews can exercise shared screens; native keyboard, safe-area, accessibility,
 and RTL behavior still need a phone or simulator.
 
 ## Known work in progress

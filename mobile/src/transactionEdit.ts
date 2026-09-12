@@ -5,7 +5,7 @@ export type EditType = 'expense' | 'income' | 'refund' | 'adjustment';
 
 export function transactionPatch(
   original: TransactionOut,
-  edited: { amount: string; type: EditType; categoryId: string | null; occurredOn: string; note: string },
+  edited: { amount: string; type: EditType; categoryId: string | null; occurredOn: string; note: string; merchant?: string },
 ): PatchTransactionInput {
   const minor = shekelToMinor(edited.amount);
   if (minor === null) throw new Error('invalid_amount');
@@ -21,5 +21,9 @@ export function transactionPatch(
   if (edited.occurredOn !== original.occurred_on) patch.occurred_on = edited.occurredOn;
   const note = edited.note.trim() || null;
   if (note !== original.note) patch.note = note;
+  if (edited.merchant !== undefined && edited.merchant.trim() !== (original.merchant_display_name ?? '')) {
+    if (edited.merchant.trim()) patch.merchant_input = edited.merchant;
+    else patch.merchant_id = null;
+  }
   return patch;
 }

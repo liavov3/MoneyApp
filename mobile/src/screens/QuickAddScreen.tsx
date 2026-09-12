@@ -12,6 +12,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ApiError, getMerchantSuggestions, getRecentMerchants, quickAdd } from '../api';
 import { CategoryChip } from '../components/categories/CategoryChip';
+import { CategoryStatus } from '../components/categories/CategoryStatus';
 import { MerchantSuggestionChip } from '../components/merchants/MerchantSuggestionChip';
 import { AppText, Button, Input, SegmentedControl } from '../components/ui';
 import { DatePicker } from '../components/ui/DatePicker';
@@ -218,6 +219,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
           </View>
 
           {/* [B2-2] Merchant block */}
+          <CategoryStatus />
           <View>
             <AppText size={font.caption} color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
               {isIncome ? 'מקור הכנסה' : 'בית עסק'}

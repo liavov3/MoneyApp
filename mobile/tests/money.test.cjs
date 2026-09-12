@@ -38,3 +38,11 @@ test('intentional type, category, and exact amount edits are sent', () => {
     amount: '40.01', transaction_type: 'expense', category_id: null,
   });
 });
+
+test('merchant edits affect only that field, with explicit clearing and no-op preservation', () => {
+  const transaction = { ...original, merchant_display_name: 'Original Store', merchant_id: 'original' };
+  assert.deepEqual(transactionPatch(transaction, { ...edit, merchant: 'Replacement' }), { merchant_input: 'Replacement' });
+  assert.deepEqual(transactionPatch(transaction, { ...edit, merchant: '  ' }), { merchant_id: null });
+  assert.deepEqual(transactionPatch(transaction, { ...edit, merchant: 'Original Store' }), {});
+  assert.deepEqual(transactionPatch(transaction, { ...edit, note: 'changed' }), { note: 'changed' });
+});

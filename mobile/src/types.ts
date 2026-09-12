@@ -129,14 +129,16 @@ export interface QuickAddInput {
 }
 
 // PATCH /transactions/{id} — partial edit (§9). Only provided keys are applied;
-// `category_id: null` clears the category. Merchant is NOT editable (server
-// drops merchant fields), so it is intentionally absent here.
+// Null category/merchant ids clear their associations; text uses Quick Add's
+// merchant resolution. Omitted fields preserve their original values.
 export interface PatchTransactionInput {
   amount?: string;
   transaction_type?: string;
   occurred_on?: string;
   note?: string | null;
   category_id?: string | null;
+  merchant_id?: string | null;
+  merchant_input?: string | null;
 }
 
 // Recurring expense template (API_CONTRACT §12). Amount stored signed-negative;

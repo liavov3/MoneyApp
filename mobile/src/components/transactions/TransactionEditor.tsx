@@ -1,6 +1,6 @@
 // Edit / delete a transaction in a bottom sheet. Loads the row by id, edits
-// amount, type, category, date, note, and saves via PATCH. Merchant is shown
-// read-only — the backend's PATCH does not accept merchant changes (§9).
+// merchant, amount, type, category, date and note. PATCH sends only changed
+// fields; merchant identity is resolved by the server (§9).
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, View } from 'react-native';
@@ -17,6 +17,7 @@ import { colors, font, radius, spacing, weight } from '../../theme';
 import type { TransactionOut } from '../../types';
 import { useCategories } from '../../useCategories';
 import { CategoryChip } from '../categories/CategoryChip';
+import { CategoryStatus } from '../categories/CategoryStatus';
 import {
   AppText,
   BottomSheet,
@@ -48,6 +49,7 @@ export function TransactionEditor({
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [occurredOn, setOccurredOn] = useState(todayISO());
   const [note, setNote] = useState('');
+  const [merchant, setMerchant] = useState('');
   const [dateOpen, setDateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -72,6 +74,7 @@ export function TransactionEditor({
         setCategoryId(t.category_id);
         setOccurredOn(t.occurred_on);
         setNote(t.note ?? '');
+        setMerchant(t.merchant_display_name ?? '');
       })
       .catch(() => { if (active) setLoadError(true); });
     return () => { active = false; };
@@ -86,7 +89,7 @@ export function TransactionEditor({
     setSaving(true);
     setErrorMsg(null);
     try {
-      const patch = transactionPatch(txn, { amount, type: bucket, categoryId, occurredOn, note });
+      const patch = transactionPatch(txn, { amount, type: bucket, categoryId, occurredOn, note, merchant });
       if (Object.keys(patch).length > 0) await patchTransaction(txn.id, patch);
       onSaved();
     } catch (e) {
@@ -151,6 +154,7 @@ export function TransactionEditor({
         <View style={{ gap: spacing.lg, paddingBottom: spacing.md }}>
           <SegmentedControl<EditType>
             value={bucket}
+            disabled={saving}
             onChange={(value) => { if (!busy.current) setBucket(value); }}
             tint={isIncome ? colors.success : colors.accent}
             options={[
@@ -168,6 +172,7 @@ export function TransactionEditor({
             <Input
               iconLeft="cash-outline"
               value={amount}
+              editable={!saving}
               onChangeText={setAmount}
               keyboardType="decimal-pad"
               placeholder="0"
@@ -175,18 +180,14 @@ export function TransactionEditor({
             />
           </View>
 
-          {/* Merchant is read-only: PATCH does not change it (§9). */}
-          {txn.merchant_display_name ? (
-            <View style={styles.readonlyRow}>
-              <Ionicons name="storefront-outline" size={16} color={colors.textMuted} />
-              <AppText color={colors.textSecondary} style={{ flex: 1 }} numberOfLines={1}>
-                {txn.merchant_display_name}
-              </AppText>
-              <AppText size={font.micro} color={colors.textMuted}>
-                בית עסק קבוע
-              </AppText>
-            </View>
-          ) : null}
+          <View>
+            <AppText size={font.caption} color={colors.textSecondary} style={styles.label}>בית עסק (לא חובה)</AppText>
+            <Input iconLeft="storefront-outline" value={merchant} onChangeText={setMerchant}
+              placeholder="שם בית העסק" accessibilityLabel="בית עסק" editable={!saving} onClear={() => setMerchant('')} />
+            <AppText size={font.micro} color={colors.textMuted} style={{ marginTop: spacing.xs }}>
+              השינוי חל על העסקה הזו בלבד.
+            </AppText>
+          </View>
 
           {!isIncome && consumer.length > 0 ? (
             <View>
@@ -200,14 +201,16 @@ export function TransactionEditor({
                     categoryKey={c.key}
                     label={c.label_he ?? c.label_en}
                     selected={categoryId === c.id}
-                    onPress={() => setCategoryId(categoryId === c.id ? null : c.id)}
+                    onPress={() => { if (!busy.current) setCategoryId(categoryId === c.id ? null : c.id); }}
                   />
                 ))}
               </View>
             </View>
           ) : null}
 
-          <Pressable style={styles.dateRow} onPress={() => setDateOpen(true)}>
+          <CategoryStatus />
+
+          <Pressable style={styles.dateRow} onPress={() => setDateOpen(true)} disabled={saving}>
             <Ionicons name="calendar-outline" size={16} color={colors.textMuted} />
             <AppText color={colors.textSecondary} style={{ flex: 1 }}>
               {occurredOn === todayISO() ? 'היום' : formatDateLong(occurredOn)}
@@ -222,6 +225,7 @@ export function TransactionEditor({
             <Input
               iconLeft="create-outline"
               value={note}
+              editable={!saving}
               onChangeText={setNote}
               placeholder="הוסף הערה"
               onClear={() => setNote('')}
@@ -263,15 +267,6 @@ const styles = StyleSheet.create({
   center: { paddingVertical: spacing.xxl, alignItems: 'center', minHeight: 160, justifyContent: 'center' },
   label: { marginBottom: spacing.sm },
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  readonlyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.input,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-  },
   dateRow: {
     flexDirection: 'row',
     alignItems: 'center',

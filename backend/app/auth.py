@@ -59,7 +59,7 @@ def require_principal(request: Request) -> Principal:
 
     # No server token configured, or no/blank token presented, or mismatch.
     if not expected or not presented or not secrets.compare_digest(
-        presented, expected
+        presented.encode("utf-8"), expected.encode("utf-8")
     ):
         raise AppError(code="unauthorized")
 

@@ -11,6 +11,9 @@ Existing work saved and pushed as `4e65acd` on `main` before new implementation.
 
 - Home derives income/net and savings-goal progress from the first 100 rows.
   Replace these with complete, server-calculated totals.
+- Home also labels every positive transaction as income, including refunds and
+  positive adjustments. Keep these types distinct in the proposed aggregates;
+  the net of recorded transactions is not a verified savings or bank balance.
 - Transaction history ignores `next_cursor`. Implement complete paginated history,
   existing category/uncategorized filters, and explicit retry for page failures.
 - Editing a refund clears its category, and sending an untouched negative
@@ -67,10 +70,11 @@ normal path short and keep all predictions explicitly separate from actuals.
   explicitly say the dev bearer token must not be in a mobile bundle. A secure
   credential setup/session flow is required before distribution. The earlier
   README's SecureStore token-gate description did not match the implementation.
-- API contract section 9 permits merchant edits, while `PatchRequest` and
-  `_EDITABLE_FIELDS` in `backend/app/routers/transactions.py` omit them. Mobile
-  deliberately renders the merchant read-only. Implement the documented merchant
-  edit flow in a subsequent aligned slice; do not silently rewrite the contract.
+- Resolved in the current slice: API contract section 9 permits merchant edits,
+  but the implementation previously ignored them. The backend now resolves an
+  owned merchant id or merchant text using Quick Add's existing identity ladder;
+  the transaction editor and mobile request types expose the documented edit.
+  The frozen contract and schema files were not changed.
 - `backend/app/routers/monthly_goals.py` and migrations 0004/0005 implement
   defaults and month overrides for three goal types outside the frozen API/schema
   files. Reconcile this pre-existing extension as part of contract review.
@@ -97,6 +101,41 @@ Final TypeScript checks and production web/iOS/Android exports passed after the
 last changes. Native on-device interaction testing has not been performed.
 The requested complete aggregate/search/offline contract revision is still
 awaiting approval. The overall improvement goal is not complete.
+
+## Merchant editing and recovery slice
+
+- PATCH merchant edits affect only the selected transaction. An explicitly
+  supplied `merchant_id` wins over text, including null to clear the association.
+  When only non-null `merchant_input` is supplied, the server resolves or creates
+  the merchant using the existing trusted matching rules. Supplied input updates
+  the private raw-input field; null clears that field without changing an omitted
+  merchant association. Omitted fields remain unchanged. No category rule is
+  created, and the public response still excludes raw input.
+- The editor sends only an intentional merchant change. Clearing the field
+  sends `merchant_id: null`; editing another field leaves merchant identity alone.
+- Concurrent amount/type edits lock the transaction while computing its new
+  signed amount, preserving a consistent final type and amount.
+- Category fetches are shared across mounted screens. A failed load offers an
+  explicit retry; recovery updates all consumers and preserves the entry draft.
+- Home ignores superseded month requests, including their errors and loading
+  state. This does not resolve the separate capped income/net aggregate issue.
+- Malformed non-ASCII bearer bytes return unauthorized instead of raising a
+  comparison error. This does not replace the development-token setup.
+
+Verification for this slice:
+
+- Targeted transaction PATCH tests: 25 passed, database connected.
+- Malformed bearer tests: 5 passed.
+- Mobile regressions: 14 passed, zero skipped; TypeScript passed.
+- Production web, iOS, and Android exports passed.
+- Synthetic browser/API checks: merchant replacement and clearing preserved
+  amount, type, category, date, note, and creation time. Category recovery restored
+  all 14 choices while retaining a typed 12.34 amount. After switching back to
+  September, a delayed August response did not overwrite September's exact
+  12524-agorot actual spending or its separately displayed 5000-agorot projection.
+- Full backend suite: 273 passed, zero skipped, database connected (724.94 s).
+- The temporary browser preview was closed and its synthetic user/data removed.
+- Native phone/simulator interaction checks remain unavailable in this run.
 
 ## Verification and completion
 
