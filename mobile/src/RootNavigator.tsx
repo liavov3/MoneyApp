@@ -10,9 +10,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ConnectionGuard, useConnectionLocked } from './ConnectionGuard';
 
 import { TransactionEditor } from './components/transactions/TransactionEditor';
+import { SavedTransactionCard } from './components/transactions/SavedTransactionCard';
 import { AppText } from './components/ui';
 import { MenuSheet } from './components/ui/MenuSheet';
 import { currentMonth } from './format';
+import { savedEntryFrom, type SavedEntry } from './savedEntry';
+import type { QuickAddResponse } from './types';
 import { GoalsScreen } from './screens/GoalsScreen';
 import { HomeScreen } from './screens/HomeScreen';
 import { QuickAddScreen } from './screens/QuickAddScreen';
@@ -37,17 +40,25 @@ export function RootNavigator({ connectionVersion = 0 }: { connectionVersion?: n
   const [editTxnId, setEditTxnId] = useState<string | null>(null);
   const [localDataVersion, setDataVersion] = useState(0);
   const dataVersion = localDataVersion + connectionVersion;
+  const [savedEntry, setSavedEntry] = useState<SavedEntry | null>(null);
 
   const openAdd = () => {
+    setSavedEntry(null);
     setAddSession((s) => s + 1);
     setAddOpen(true);
   };
   const bumpData = () => setDataVersion((v) => v + 1);
-  const onAdded = () => {
+  const openEdit = (id: string) => {
+    setSavedEntry(null);
+    setEditTxnId(id);
+  };
+  const onAdded = (response: QuickAddResponse) => {
     setAddOpen(false);
+    setSavedEntry(savedEntryFrom(response));
     bumpData();
   };
   const afterEdit = () => {
+    setSavedEntry(null);
     setEditTxnId(null);
     bumpData();
   };
@@ -72,7 +83,7 @@ export function RootNavigator({ connectionVersion = 0 }: { connectionVersion?: n
             onOpenMenu={() => setMenuOpen(true)}
             onOpenRecurring={() => setRecurringOpen(true)}
             onOpenGoal={() => setGoalsOpen(true)}
-            onEditTransaction={setEditTxnId}
+            onEditTransaction={openEdit}
           />
         ) : (
           <TransactionsScreen
@@ -80,10 +91,20 @@ export function RootNavigator({ connectionVersion = 0 }: { connectionVersion?: n
             month={month}
             onMonthChange={setMonth}
             onOpenMenu={() => setMenuOpen(true)}
-            onEditTransaction={setEditTxnId}
+            onEditTransaction={openEdit}
           />
         )}
       </View>
+
+      {savedEntry && !overlay ? (
+        <SavedTransactionCard key={savedEntry.transaction.id} entry={savedEntry}
+          onDismiss={() => setSavedEntry(null)} onAddAnother={openAdd}
+          onEdit={() => openEdit(savedEntry.transaction.id)}
+          onUndone={(id) => {
+            setSavedEntry((current) => current?.transaction.id === id ? null : current);
+            bumpData();
+          }} />
+      ) : null}
 
       {/* Bottom tab bar + center Add FAB (hidden under full-screen overlays) */}
       {!overlay ? (

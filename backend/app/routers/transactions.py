@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 import base64
+import asyncio
 import binascii
 import json
 import uuid
@@ -40,6 +41,8 @@ router = APIRouter()
 _VALID_TYPES = {"expense", "income", "refund", "adjustment"}
 # Reject dates more than ~1 day in the future (typo guard; §14). Backdating ok.
 _MAX_FUTURE_DAYS = 1
+_LARGE_AMOUNT_MINOR = 1_000_000  # Contract §8's documented ₪10,000 threshold.
+_WARNING_TIMEOUT_SECONDS = 2
 
 
 class QuickAddRequest(BaseModel):
@@ -60,6 +63,7 @@ class QuickAddRequest(BaseModel):
     # when both are present; merchant_input is still preserved on the transaction.
     merchant_input: str | None = None
     merchant_id: str | None = None
+    confirm_large_amount: bool = False
 
 
 class TransactionOut(BaseModel):
@@ -304,6 +308,25 @@ async def _resolve_or_create_merchant(
     return row["id"], row["display_name"], row["normalized_merchant_name"]
 
 
+async def _find_duplicate(params: dict, transaction_id: str, created_at: datetime) -> str | None:
+    """Advisory same-day match, after commit; never a uniqueness constraint."""
+    day_start = created_at.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    async with get_sessionmaker()() as session:
+        return (await session.execute(text(
+            "SELECT id::text FROM transactions "
+            "WHERE user_id = :user_id AND id <> CAST(:saved_id AS uuid) "
+            "AND source = 'manual' AND is_card_settlement = false "
+            "AND amount_minor = :amount_minor AND currency = :currency "
+            "AND transaction_type = :transaction_type AND occurred_on = :occurred_on "
+            "AND merchant_id IS NOT DISTINCT FROM CAST(:merchant_id AS uuid) "
+            "AND created_at >= :day_start AND created_at < :day_end "
+            "ORDER BY created_at DESC, id DESC LIMIT 1"
+        ), {
+            **params, "saved_id": transaction_id,
+            "day_start": day_start, "day_end": day_start + timedelta(days=1),
+        })).scalar_one_or_none()
+
+
 @router.post(
     "/transactions/quick-add",
     response_model=QuickAddResponse,
@@ -426,6 +449,30 @@ async def quick_add(
         updated_at=_rfc3339(row["updated_at"]),
     )
 
+    warnings: list[dict] = []
+    if abs(amount_minor) >= _LARGE_AMOUNT_MINOR and not body.confirm_large_amount:
+        warnings.append({
+            "code": "large_amount",
+            "message": "That's a big one — confirm it's correct.",
+            "amount_minor": amount_minor,
+        })
+    # Enrichment failure must not turn an already committed save into a 503.
+    # The cap protects capture latency; duplicates are advisory, never blocked.
+    try:
+        async with asyncio.timeout(_WARNING_TIMEOUT_SECONDS):
+            duplicate_id = await _find_duplicate(params, txn.id, row["created_at"])
+        if duplicate_id is not None:
+            warnings.append({
+                "code": "duplicate_looking",
+                "message": "A similar entry was just added.",
+                "similar_transaction_id": duplicate_id,
+            })
+    except Exception:
+        log_event(
+            "quick_add_warning_skipped", request_id=request_id,
+            endpoint="/api/v1/transactions/quick-add", status=201,
+        )
+
     # Privacy-safe log: ids/status only — never amount, note, or raw input.
     log_event(
         "quick_add",
@@ -436,7 +483,7 @@ async def quick_add(
         transaction_id=txn.id,
     )
 
-    return QuickAddResponse(transaction=txn, category_suggestion=category_suggestion)
+    return QuickAddResponse(transaction=txn, warnings=warnings, category_suggestion=category_suggestion)
 
 
 # =========================================================================== #

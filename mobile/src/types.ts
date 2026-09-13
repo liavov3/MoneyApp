@@ -74,9 +74,13 @@ export interface TransactionOut {
   updated_at: string;
 }
 
+export type QuickAddWarning =
+  | { code: 'duplicate_looking'; message: string; similar_transaction_id: string }
+  | { code: 'large_amount'; message: string; amount_minor: number };
+
 export interface QuickAddResponse {
   transaction: TransactionOut;
-  warnings: Array<Record<string, unknown>>;
+  warnings: QuickAddWarning[];
   category_suggestion: {
     category_id: string;
     category_key: string | null;
@@ -126,6 +130,7 @@ export interface QuickAddInput {
   category_id?: string;
   merchant_id?: string;
   merchant_input?: string;
+  confirm_large_amount?: boolean;
 }
 
 // PATCH /transactions/{id} — partial edit (§9). Only provided keys are applied;

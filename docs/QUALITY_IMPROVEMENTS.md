@@ -180,6 +180,58 @@ Verification:
 - Real-device persistence, native modals, keyboard, and accessibility testing
   remain unavailable in this run.
 
+## Post-save feedback slice
+
+- Implements API section 8's documented 10000-shekel threshold and same-day
+  duplicate assumption. Matches owned manual rows by signed amount, merchant
+  (including null), financial date, currency, and type; recency uses the saved
+  row's UTC creation day with explicit start-inclusive/end-exclusive bounds.
+- Commits the transaction before duplicate lookup. Advisory lookup is capped at
+  two seconds; failure/timeout may omit the duplicate note but preserves the
+  successful response and any large-amount warning. `confirm_large_amount`
+  suppresses only the large-amount note.
+- Quick Add presents a dismissible saved-entry card with add-another/edit/undo.
+  Starting any transaction editor dismisses that card so later corrections do
+  not leave an outdated saved amount on screen.
+  Warnings never prevent a save; large entries have an explicit amount-is-correct
+  action that dismisses the warning without another write. Undo deletes only the
+  newly saved id, never the similar original. An ambiguous undo response is
+  visible; an explicit retry accepts 404 as already absent. Neither save nor
+  undo retries automatically.
+- Quick Add tests now create and clean up a temporary principal per test.
+  Earlier versions used the configured development account, so past runs may
+  have left test expenses in that ledger. Those rows were not removed because
+  their provenance cannot be established safely.
+- Frozen API/schema documents are unchanged. Rule and alias prompts remain a
+  separate outstanding section-8 gap.
+
+Verification:
+
+- TypeScript, 33 mobile regressions (zero skipped), and production exports for
+  web, iOS, and Android passed.
+- Browser/API checks with a temporary synthetic account: ordinary saves returned
+  to Home; add-another opened a fresh form; two 22.22 expenses both persisted and
+  the second displayed a duplicate note. Undo removed only the new id. A lost
+  delete confirmation showed a recoverable message without retrying; the user's
+  retry received 404 and cleared the card, retaining the original expense.
+- Editing the saved 12000 expense through its card changed that same row to
+  -12034 agorot. Actual spending became 26780 agorot; recurring projections stayed
+  separately at 5000. Confirming a later 11000 expense kept exactly its original
+  id and amount, with no extra expense created.
+- Final browser replay: starting an edit from recent transactions dismissed the
+  saved card. Changing 0.07 to 0.08 persisted exactly -8 agorot and left no stale
+  saved message. No browser application errors were recorded.
+- Full database-connected suite: 289 passed, two failed, zero skipped. One
+  ownership test lost its database connection (Windows socket timeout); the new
+  warning-log assertion needed to enable INFO capture because ASGITransport does
+  not run app lifespan. After correcting the logging test setup, all 32 Quick
+  Add tests plus the failed ownership test passed (33 passed, zero skipped,
+  120.50 s). The full suite was not repeated after that test-only correction.
+- Both browser previews were closed and their temporary synthetic user/data
+  were removed successfully.
+- Phone/simulator checks for native layout, keyboard, safe areas, accessibility,
+  secure-storage persistence, and modal behavior remain unavailable.
+
 ## Verification and completion
 
 Run the full database-connected backend suite for financial/cross-layer changes,

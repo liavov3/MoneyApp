@@ -20,6 +20,12 @@ Expo SDK 57 / React Native, with Hebrew copy, RTL layouts and a dark theme.
   merchant on other transactions or silently changing the category.
 - Failed category loads offer a retry that keeps the current entry draft.
   Switching months ignores delayed responses for previously selected months.
+- Quick Add returns to the app with a saved-entry card offering another entry,
+  edit, or undo. Same-day duplicate-looking entries and amounts at or above
+  10,000 show advisory notes after saving. Confirming a large amount or dismissing
+  the card keeps the entry; undo removes
+  only the new entry. A lost undo response stays visible and can be retried for
+  that same entry without resubmitting the expense.
 - Recurring commitments can be created, edited, deactivated, and deleted.
   Editing unrelated details preserves the existing expected date.
 - Expense, income, and savings goals support defaults and month overrides.

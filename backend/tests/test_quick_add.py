@@ -19,6 +19,10 @@ default) and otherwise SKIP via the shared `migrated` fixture.
 from __future__ import annotations
 
 import logging
+from logging.handlers import BufferingHandler
+import uuid
+import asyncio
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -30,6 +34,7 @@ from app.config import get_settings
 from app.db import get_sessionmaker
 from app.logging_utils import get_logger
 from app.main import create_app
+from app.routers import transactions
 
 TXN_FIELDS = {
     "id", "amount_minor", "currency", "transaction_type", "source",
@@ -51,9 +56,31 @@ async def _fresh_global_engine():
 def dev_token(monkeypatch) -> str:
     token = "test-dev-token-qa-77"
     monkeypatch.setenv("DEV_BEARER_TOKEN", token)
+    monkeypatch.setenv("DEV_USER_ID", str(uuid.uuid4()))
     get_settings.cache_clear()
     yield token
     get_settings.cache_clear()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _isolated_user(request, dev_token, _fresh_global_engine):
+    # These tests previously wrote into the configured development principal.
+    # Auth-only tests still run without a database; persistence tests get an
+    # ephemeral owner, so warning assertions do not depend on prior test runs.
+    if "migrated" not in request.fixturenames:
+        yield
+        return
+    request.getfixturevalue("migrated")
+    uid = get_settings().dev_user_id
+    async with get_sessionmaker()() as session:
+        await session.execute(text("INSERT INTO users (id, base_currency) VALUES (:u, 'ILS')"), {"u": uid})
+        await session.commit()
+    try:
+        yield
+    finally:
+        async with get_sessionmaker()() as session:
+            await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": uid})
+            await session.commit()
 
 
 async def _post(token: str | None, payload: dict):
@@ -271,3 +298,136 @@ async def test_no_pii_in_logs(dev_token: str, migrated: None) -> None:
         assert secret_note not in rendered
         assert "35.90" not in rendered  # raw amount string
         assert "3590" not in rendered   # amount magnitude
+
+
+@pytest.mark.asyncio
+async def test_duplicate_is_saved_and_warns_with_only_the_prior_owned_id(dev_token, migrated):
+    first = (await _post(dev_token, {"amount": "33.50"})).json()["transaction"]
+    second = await _post(dev_token, {"amount": "33.50"})
+    assert second.status_code == 201
+    body = second.json()
+    assert body["transaction"]["id"] != first["id"]
+    assert body["transaction"]["amount_minor"] == -3350
+    assert body["warnings"] == [{
+        "code": "duplicate_looking", "message": "A similar entry was just added.",
+        "similar_transaction_id": first["id"],
+    }]
+    assert await _count_txns(get_settings().dev_user_id) == 2
+
+
+@pytest.mark.asyncio
+async def test_duplicate_uses_resolved_merchant_identity(dev_token, migrated):
+    first = (await _post(dev_token, {"amount": "8.25", "merchant_input": "Same Store"})).json()["transaction"]
+    second = (await _post(dev_token, {"amount": "8.25", "merchant_input": " SAME STORE "})).json()
+    assert second["transaction"]["merchant_id"] == first["merchant_id"]
+    assert second["warnings"][0]["similar_transaction_id"] == first["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("difference", [
+    {"amount": "33.51"}, {"currency": "USD"}, {"merchant_input": "Different Store"},
+    {"occurred_on": (date.today() - timedelta(days=1)).isoformat()},
+    {"transaction_type": "refund"},
+])
+async def test_distinct_transaction_is_not_a_duplicate(dev_token, migrated, difference):
+    await _post(dev_token, {"amount": "33.50", "transaction_type": "income"})
+    result = await _post(dev_token, {"amount": "33.50", "transaction_type": "income", **difference})
+    assert result.status_code == 201
+    assert result.json()["warnings"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary,expected", [("start", True), ("before_start", False), ("end", False)])
+async def test_duplicate_window_is_the_saved_rows_utc_creation_day(dev_token, migrated, boundary, expected):
+    first = (await _post(dev_token, {"amount": "17.13"})).json()["transaction"]
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    created = start if boundary == "start" else start - timedelta(microseconds=1) if boundary == "before_start" else start + timedelta(days=1)
+    async with get_sessionmaker()() as session:
+        await session.execute(text("UPDATE transactions SET created_at=:created WHERE id=CAST(:id AS uuid)"), {"created": created, "id": first["id"]})
+        await session.commit()
+    result = (await _post(dev_token, {"amount": "17.13"})).json()
+    assert bool(result["warnings"]) is expected
+
+
+@pytest.mark.asyncio
+async def test_foreign_recent_transaction_is_not_disclosed(dev_token, migrated):
+    foreign = str(uuid.uuid4())
+    async with get_sessionmaker()() as session:
+        await session.execute(text("INSERT INTO users (id,base_currency) VALUES (:u,'ILS')"), {"u": foreign})
+        await session.execute(text("INSERT INTO transactions (user_id,amount_minor,currency,transaction_type,source,occurred_on) VALUES (:u,-1731,'ILS','expense','manual',:d)"), {"u": foreign, "d": date.today()})
+        await session.commit()
+    try:
+        result = await _post(dev_token, {"amount": "17.31", "user_id": foreign})
+        assert result.status_code == 201
+        assert result.json()["warnings"] == []
+    finally:
+        async with get_sessionmaker()() as session:
+            await session.execute(text("DELETE FROM users WHERE id=:u"), {"u": foreign})
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("amount,ttype,confirmed,expected", [
+    ("9999.99", "expense", False, None),
+    ("10000", "expense", False, -1000000),
+    ("12000", "income", False, 1200000),
+    ("12000", "expense", True, None),
+])
+async def test_large_amount_warning_uses_exact_minor_units_and_confirmation(dev_token, migrated, amount, ttype, confirmed, expected):
+    result = await _post(dev_token, {"amount": amount, "transaction_type": ttype, "confirm_large_amount": confirmed})
+    assert result.status_code == 201
+    warnings = result.json()["warnings"]
+    assert [w["amount_minor"] for w in warnings if w["code"] == "large_amount"] == ([] if expected is None else [expected])
+    assert await _fetch_txn(result.json()["transaction"]["id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_large_amount_confirmation_does_not_suppress_duplicate_warning(dev_token, migrated):
+    first = (await _post(dev_token, {"amount": "10000"})).json()["transaction"]
+    result = (await _post(dev_token, {"amount": "10000", "confirm_large_amount": True})).json()
+    assert [w["code"] for w in result["warnings"]] == ["duplicate_looking"]
+    assert result["warnings"][0]["similar_transaction_id"] == first["id"]
+
+
+@pytest.mark.asyncio
+async def test_warning_lookup_failure_cannot_undo_or_hide_a_committed_save(dev_token, migrated, monkeypatch):
+    visible_at_lookup = []
+    async def broken_lookup(params, transaction_id, created_at):
+        visible_at_lookup.append(await _fetch_txn(transaction_id) is not None)
+        raise RuntimeError("sensitive-enrichment-failure")
+    monkeypatch.setattr(transactions, "_find_duplicate", broken_lookup)
+    handler = BufferingHandler(100)
+    logger = get_logger()
+    previous_level = logger.level
+    logger.addHandler(handler)
+    # ASGITransport does not run lifespan, so configure INFO capture explicitly.
+    logger.setLevel(logging.INFO)
+    try:
+        result = await _post(dev_token, {"amount": "10000"})
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+    assert result.status_code == 201
+    assert visible_at_lookup == [True]  # seen through a separate connection, before enrichment
+    assert [w["code"] for w in result.json()["warnings"]] == ["large_amount"]
+    assert await _count_txns(get_settings().dev_user_id) == 1
+    messages = " ".join(record.getMessage() for record in handler.buffer)
+    assert "quick_add_warning_skipped" in messages
+    assert "sensitive-enrichment-failure" not in messages
+
+
+@pytest.mark.asyncio
+async def test_warning_lookup_timeout_retains_a_successful_save(dev_token, migrated, monkeypatch):
+    cancelled = False
+    async def stalled_lookup(*args):
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(30)
+        finally:
+            cancelled = True
+    monkeypatch.setattr(transactions, "_find_duplicate", stalled_lookup)
+    monkeypatch.setattr(transactions, "_WARNING_TIMEOUT_SECONDS", 0.01)
+    result = await _post(dev_token, {"amount": "9.17"})
+    assert result.status_code == 201
+    assert cancelled
+    assert await _count_txns(get_settings().dev_user_id) == 1

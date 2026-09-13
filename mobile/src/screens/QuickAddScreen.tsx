@@ -18,14 +18,14 @@ import { AppText, Button, Input, SegmentedControl } from '../components/ui';
 import { DatePicker } from '../components/ui/DatePicker';
 import { formatDateLong, minorToInput, shekelToMinor, todayISO } from '../format';
 import { colors, font, radius, spacing, weight } from '../theme';
-import type { MerchantSuggestion, RecentMerchant } from '../types';
+import type { MerchantSuggestion, QuickAddResponse, RecentMerchant } from '../types';
 import { useCategories } from '../useCategories';
 
 type TxnType = 'expense' | 'income' | 'refund';
 // Common income sources — tapped into the name field (becomes merchant_input).
 const INCOME_SOURCES = ['משכורת', 'מתנה', 'עבודה', 'בונוס'];
 
-export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAdded: (response: QuickAddResponse) => void }) {
   const insets = useSafeAreaInsets();
   const { consumer } = useCategories();
   const [txnType, setTxnType] = useState<TxnType>('expense');
@@ -117,7 +117,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
       // Amount is always a non-negative magnitude; the SERVER applies the sign
       // from transaction_type (expense → negative, income → positive). §14.
       const hasMerchantInput = merchant.trim().length > 0;
-      await quickAdd({
+      const response = await quickAdd({
         amount: minorToInput(amountValue),
         transaction_type: txnType,
         occurred_on: occurredOn,
@@ -128,7 +128,7 @@ export function QuickAddScreen({ onClose, onAdded }: { onClose: () => void; onAd
         ...(!isIncome && categoryId ? { category_id: categoryId } : {}),
       });
       setSaved(true);
-      onAdded();
+      onAdded(response);
     } catch (e) {
       const code = e instanceof ApiError ? e.fieldCode('amount') ?? e.code : undefined;
       setErrorMsg(
