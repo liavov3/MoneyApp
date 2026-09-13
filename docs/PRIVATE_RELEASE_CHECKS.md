@@ -18,18 +18,36 @@ Completed locally:
 - Installation manifest and four icon assets are present in the web export.
 - Known local database credentials and dev token matched no deployable source
   or web build files. Web output contains no source maps.
-- Existing configured owner ID matches the previous local principal. The first
-  owner login is intentionally left for the owner to create in the local setup
-  page; no password is chosen or printed by the assistant.
+- Existing configured owner ID matches the previous local principal. The owner
+  created the private login personally; creation was verified without reading
+  or printing the password.
+
+Completed on Render:
+
+- Release `8ae914fe09febfb6109480df4237035f5671556e` was published to the existing
+  repository with the owner's explicit approval and deployed successfully.
+- Live app: <https://moneysaver-private.onrender.com>.
+- Render confirms Docker / Free, Frankfurt, automatic deployment off. The
+  initial cloud build and startup succeeded in 1 minute 38 seconds.
+- The approved database credential was imported into Render's secret settings;
+  the temporary local import file was removed afterward.
+- Ten hosted checks passed: app, health, manifest and iPhone icon return 200;
+  signed-out transactions/session return 401; secret/repository/docs paths return
+  404; signed-out logout returns 204. Checked responses have no-store, HSTS and CSP.
+- The logout cookie policy has Secure, HttpOnly, SameSite=Strict, the __Host-
+  prefix, and no Domain. Actual successful-login cookie inspection remains pending.
+- The hosted browser displays the username/password screen with no observed
+  application errors or warnings. No access-code prompt is present.
 
 Pending external checks:
 
-- Render build/start, live HTTPS cookie flags, hosted access restrictions,
-  provider free-plan confirmation, and existing-owner login on the live app.
+- Existing-owner login, records, refresh and logout in the hosted app; the owner
+  has been asked to verify their login without sharing credentials in chat.
+- Neon account billing-plan confirmation; no new database or paid Render service
+  was created. Render Free itself was verified in the deployment dashboard.
 - Native SecureStore persistence and actual iPhone Safari/Home Screen behavior.
 - A local Docker container build could not be run because Docker's engine did
-  not become available. The intended hosting container must pass Render's build
-  and startup checks before deployment can be declared complete.
+  not become available; the actual Render container build/start succeeded.
 
 No financial API payloads, financial schema, signs, aggregates, or recurring
 behavior were revised. The previously documented capped Home income/net totals
