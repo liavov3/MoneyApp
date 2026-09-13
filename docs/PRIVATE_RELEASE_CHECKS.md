@@ -38,11 +38,14 @@ Completed on Render:
   prefix, and no Domain. Actual successful-login cookie inspection remains pending.
 - The hosted browser displays the username/password screen with no observed
   application errors or warnings. No access-code prompt is present.
+- The owner confirmed that login succeeds on the live app and their existing
+  records are visible. Credentials were not shared in chat.
 
 Pending external checks:
 
-- Existing-owner login, records, refresh and logout in the hosted app; the owner
-  has been asked to verify their login without sharing credentials in chat.
+- Hosted refresh/logout behavior and actual successful-login cookie inspection
+  remain unobserved; the equivalent local browser flow and production auth tests
+  passed before deployment.
 - Neon account billing-plan confirmation; no new database or paid Render service
   was created. Render Free itself was verified in the deployment dashboard.
 - Native SecureStore persistence and actual iPhone Safari/Home Screen behavior.
