@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { ApiError, createApiClient } = require('../src/api.ts');
 let credentials;
 const transport = { getConnection: () => credentials, invalidate: (expected) => { if (credentials === expected) credentials = null; } };
-const { quickAdd, listTransactions } = createApiClient(transport);
+const { quickAdd, listTransactions, categorizeTransaction } = createApiClient(transport);
 const originalFetch = global.fetch;
 beforeEach(() => { credentials = { baseUrl: 'https://test.example', token: 'synthetic-test-token' }; });
 afterEach(() => { global.fetch = originalFetch; });
@@ -38,6 +38,19 @@ test('ambiguous network failure is surfaced without automatically retrying a wri
   global.fetch = async () => { requests++; throw new Error('untrusted transport details'); };
   await assert.rejects(quickAdd({ amount: '1.01' }), (error) => error instanceof ApiError && error.status === 0);
   assert.equal(requests, 1);
+});
+
+test('category learning uses the existing authenticated transaction-centric endpoint', async () => {
+  const input = { category_id: 'category-id', promote_to_rule: true,
+    match_type: 'merchant_exact', apply_to_existing: false };
+  global.fetch = async (url, options) => {
+    assert.equal(url, 'https://test.example/api/v1/transactions/saved-id/categorize');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.Authorization, 'Bearer synthetic-test-token');
+    assert.deepEqual(JSON.parse(options.body), input);
+    return new Response(JSON.stringify({ applied_to_existing_count: 0 }));
+  };
+  assert.equal((await categorizeTransaction('saved-id', input)).applied_to_existing_count, 0);
 });
 
 test('a stalled response body times out and lets the form recover', async (t) => {

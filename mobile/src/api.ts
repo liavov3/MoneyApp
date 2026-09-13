@@ -2,6 +2,8 @@
 import { session } from './session';
 import type { SessionTransport } from './sessionStore';
 import type {
+  CategorizeInput,
+  CategorizeResponse,
   CategoryOut,
   CreateTemplateInput,
   GoalScope,
@@ -126,6 +128,9 @@ export function createApiClient(transport: SessionTransport) {
   const deleteTransaction = (id: string) =>
     request<void>('DELETE', `/transactions/${id}`);
 
+  const categorizeTransaction = (id: string, body: CategorizeInput) =>
+    request<CategorizeResponse>('POST', `/transactions/${id}/categorize`, body);
+
   // Recurring expense templates (API_CONTRACT §12). Projection-only on the
   // backend — these never create a transaction row.
   const listRecurring = (active?: boolean) =>
@@ -163,7 +168,7 @@ export function createApiClient(transport: SessionTransport) {
     return request<void>('DELETE', `/monthly-goals?${q.toString()}`);
   };
 
-  return { getHome, getCategories, getRecentMerchants, getMerchantSuggestions, quickAdd, listTransactions, getTransaction, patchTransaction, deleteTransaction, listRecurring, createRecurring, patchRecurring, deleteRecurring, getMonthlyGoals, putMonthlyGoal, deleteMonthlyGoal };
+  return { getHome, getCategories, getRecentMerchants, getMerchantSuggestions, quickAdd, listTransactions, getTransaction, patchTransaction, deleteTransaction, categorizeTransaction, listRecurring, createRecurring, patchRecurring, deleteRecurring, getMonthlyGoals, putMonthlyGoal, deleteMonthlyGoal };
 }
 
-export const { getHome, getCategories, getRecentMerchants, getMerchantSuggestions, quickAdd, listTransactions, getTransaction, patchTransaction, deleteTransaction, listRecurring, createRecurring, patchRecurring, deleteRecurring, getMonthlyGoals, putMonthlyGoal, deleteMonthlyGoal } = createApiClient(session);
+export const { getHome, getCategories, getRecentMerchants, getMerchantSuggestions, quickAdd, listTransactions, getTransaction, patchTransaction, deleteTransaction, categorizeTransaction, listRecurring, createRecurring, patchRecurring, deleteRecurring, getMonthlyGoals, putMonthlyGoal, deleteMonthlyGoal } = createApiClient(session);

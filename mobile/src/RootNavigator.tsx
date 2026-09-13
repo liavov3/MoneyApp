@@ -100,6 +100,11 @@ export function RootNavigator({ connectionVersion = 0 }: { connectionVersion?: n
         <SavedTransactionCard key={savedEntry.transaction.id} entry={savedEntry}
           onDismiss={() => setSavedEntry(null)} onAddAnother={openAdd}
           onEdit={() => openEdit(savedEntry.transaction.id)}
+          onRemembered={(transaction) => {
+            setSavedEntry((current) => current?.transaction.id === transaction.id
+              ? { ...current, transaction, rulePrompt: null } : current);
+            bumpData();
+          }}
           onUndone={(id) => {
             setSavedEntry((current) => current?.transaction.id === id ? null : current);
             bumpData();

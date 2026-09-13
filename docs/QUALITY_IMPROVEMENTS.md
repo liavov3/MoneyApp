@@ -232,6 +232,71 @@ Verification:
 - Phone/simulator checks for native layout, keyboard, safe areas, accessibility,
   secure-storage persistence, and modal behavior remain unavailable.
 
+## Explicit category-learning slice
+
+- Completes the existing Quick Add rule-promotion flow (API sections 8/10;
+  QUICK_ADD_UX_SPEC section 8). The backend previously always returned
+  `offer:false`; mobile now consumes eligible offers and calls the existing
+  categorize endpoint through a typed API method.
+- Amount-only/uncategorized entries, generic payees, active exact rules, and
+  one-off Other entries suppress the offer. Repeated Other entries meet the
+  two-occurrence threshold and first ask the user to choose a meaningful consumer
+  category. The offer is evaluated against the authenticated owner's data.
+- Remember explicitly sends `promote_to_rule:true`, `merchant_exact`, and
+  `apply_to_existing:false`. The existing rule upsert makes an explicit retry
+  update the same rule. Not now dismisses the offer without a write. Optional
+  duplicate and rule reads run concurrently with independent two-second caps;
+  either can fail without invalidating a committed save or discarding the other.
+- The saved card checks that offer metadata matches the saved merchant/category.
+  Rule confirmation checks the returned transaction, category, rule, and absence
+  of historical updates before reporting success. Failed or ambiguous writes
+  remain visible and require an explicit retry. Remember and Undo cannot run
+  concurrently from the card.
+- Existing categorize ownership, database uniqueness, and frozen API/schema
+  documents remain unchanged. No new endpoint, field, or migration was added.
+- Final review reproduced a concurrent merchant-edit race: categorization could
+  read the old merchant, wait for an edit to finish, and then return the new
+  transaction with a rule for the old merchant. Categorization now locks the
+  owned transaction before reading its merchant, so the rule and response use
+  one consistent identity. The regression coordinates real database locks and
+  failed on the original code (Golda rule with a Cafe Greg transaction).
+
+Verification:
+
+- Focused database-connected Quick Add/rule-offer tests: 53 passed, zero skipped
+  (214.58 s). Includes eligibility, ownership, generics, repeated Other, existing
+  rules, exact amounts, explicit retries, preserved history, and optional-read
+  failure/timeout isolation with privacy-safe logging.
+- Mobile: 38 regressions passed, zero skipped; TypeScript and production web,
+  iOS, and Android exports passed.
+- Browser/API with a temporary synthetic owner: Not now created no rule and
+  made no categorize request. A simulated 503 preserved the expense. A lost
+  successful confirmation remained ambiguous; the explicit retry confirmed the
+  same rule id, without duplication or automatic retries. The next expense saved
+  exactly -3525 agorot with the remembered category and no repeated offer.
+- All 124 original grocery rows retained their category and amount. A generic
+  Bit entry and the first Other entry showed no offer. On the second Other entry,
+  choosing Shopping changed only the current -915-agorot row; the earlier
+  -815-agorot row remained Other. The remembered rule supplied future suggestions.
+- Browser layout checked at 390x844, including the scrollable category picker
+  and reachable saved-entry actions. Opening Edit after promotion showed 9.15
+  and cleared the saved card. No browser application errors were recorded.
+  The browser initially cached the old export; all changed-flow checks above
+  ran after refresh and verification of the new bundle.
+- The temporary preview was closed and its synthetic user/data removed.
+- Full database-connected backend suite: 312 passed, zero skipped (1044.74 s).
+  This run started before the final categorization lock fix. The final focused
+  run passed all 63 rule-offer, categorization, and transaction-edit tests,
+  including the reproduced concurrency regression (zero skipped, 273.48 s).
+  The full suite was not repeated for that isolated lock change.
+- Native phone/simulator keyboard, safe-area, accessibility, modal behavior,
+  and secure-storage persistence remain unverified.
+
+Generic merchant suggestion/memory behavior in `category_rules.py` remains a
+separate pre-existing disagreement with QUICK_ADD_UX_SPEC section 6; this slice
+guards rule offers. Alias offers and direct category-rule resource management
+also remain unfinished contract surfaces.
+
 ## Verification and completion
 
 Run the full database-connected backend suite for financial/cross-layer changes,

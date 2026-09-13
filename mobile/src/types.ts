@@ -78,6 +78,31 @@ export type QuickAddWarning =
   | { code: 'duplicate_looking'; message: string; similar_transaction_id: string }
   | { code: 'large_amount'; message: string; amount_minor: number };
 
+export type RulePrompt = { offer: false } | {
+  offer: true;
+  merchant_id: string;
+  suggested_category_id: string;
+  suggested_category_key: string;
+};
+
+export interface CategorizeInput {
+  category_id: string;
+  promote_to_rule?: boolean;
+  match_type?: 'merchant_exact' | 'merchant_contains';
+  apply_to_existing?: boolean;
+}
+
+export interface CategorizeResponse {
+  transaction: TransactionOut;
+  rule: {
+    id: string; match_type: 'merchant_exact' | 'merchant_contains';
+    match_value_present: boolean; category_id: string; category_key: string;
+    source: 'user_correction' | 'system'; priority: number;
+    is_active: boolean; updated_at: string;
+  } | null;
+  applied_to_existing_count: number;
+}
+
 export interface QuickAddResponse {
   transaction: TransactionOut;
   warnings: QuickAddWarning[];
@@ -86,7 +111,7 @@ export interface QuickAddResponse {
     category_key: string | null;
     source: string;
   } | null;
-  rule_prompt: Record<string, unknown>;
+  rule_prompt: RulePrompt | null;
   alias_suggestion: Record<string, unknown> | null;
 }
 

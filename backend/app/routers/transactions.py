@@ -35,6 +35,7 @@ from app.errors import AppError
 from app.logging_utils import log_event
 from app.merchants import clean_raw, display_form, normalize_merchant_name
 from app.money import parse_amount_to_minor
+from app.rule_prompts import quick_add_rule_prompt
 
 router = APIRouter()
 
@@ -327,6 +328,17 @@ async def _find_duplicate(params: dict, transaction_id: str, created_at: datetim
         })).scalar_one_or_none()
 
 
+async def _optional_save_signal(operation, fallback, event: str, request_id: str):
+    """Read-only enrichment is bounded and cannot negate a committed save."""
+    try:
+        async with asyncio.timeout(_WARNING_TIMEOUT_SECONDS):
+            return await operation
+    except Exception:
+        log_event(event, request_id=request_id,
+                  endpoint="/api/v1/transactions/quick-add", status=201)
+        return fallback
+
+
 @router.post(
     "/transactions/quick-add",
     response_model=QuickAddResponse,
@@ -456,22 +468,20 @@ async def quick_add(
             "message": "That's a big one — confirm it's correct.",
             "amount_minor": amount_minor,
         })
-    # Enrichment failure must not turn an already committed save into a 503.
-    # The cap protects capture latency; duplicates are advisory, never blocked.
-    try:
-        async with asyncio.timeout(_WARNING_TIMEOUT_SECONDS):
-            duplicate_id = await _find_duplicate(params, txn.id, row["created_at"])
-        if duplicate_id is not None:
-            warnings.append({
-                "code": "duplicate_looking",
-                "message": "A similar entry was just added.",
-                "similar_transaction_id": duplicate_id,
-            })
-    except Exception:
-        log_event(
-            "quick_add_warning_skipped", request_id=request_id,
-            endpoint="/api/v1/transactions/quick-add", status=201,
-        )
+    # Independent post-commit reads share the latency window. A failed signal
+    # does not discard the other signal or turn the successful save into a 503.
+    duplicate_id, rule_prompt = await asyncio.gather(
+        _optional_save_signal(_find_duplicate(params, txn.id, row["created_at"]),
+                              None, "quick_add_warning_skipped", request_id),
+        _optional_save_signal(quick_add_rule_prompt(txn, principal.user_id, merchant_normalized_name),
+                              {"offer": False}, "quick_add_rule_prompt_skipped", request_id),
+    )
+    if duplicate_id is not None:
+        warnings.append({
+            "code": "duplicate_looking",
+            "message": "A similar entry was just added.",
+            "similar_transaction_id": duplicate_id,
+        })
 
     # Privacy-safe log: ids/status only — never amount, note, or raw input.
     log_event(
@@ -483,7 +493,8 @@ async def quick_add(
         transaction_id=txn.id,
     )
 
-    return QuickAddResponse(transaction=txn, warnings=warnings, category_suggestion=category_suggestion)
+    return QuickAddResponse(transaction=txn, warnings=warnings, category_suggestion=category_suggestion,
+                            rule_prompt=rule_prompt)
 
 
 # =========================================================================== #
@@ -1073,12 +1084,14 @@ async def categorize_transaction(
     try:
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
-            # Existence + ownership (missing/non-owned -> identical generic 404).
+            # Lock the identity before categorizing: a concurrent merchant edit
+            # must not produce a rule for a different merchant than the response.
+            # Missing/non-owned still returns the same generic 404.
             target = (
                 await session.execute(
                     text(
                         "SELECT merchant_id::text AS merchant_id FROM transactions "
-                        "WHERE id = :id AND user_id = :user_id"
+                        "WHERE id = :id AND user_id = :user_id FOR UPDATE"
                     ),
                     {"id": transaction_id, "user_id": principal.user_id},
                 )

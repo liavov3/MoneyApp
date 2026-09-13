@@ -26,6 +26,13 @@ Expo SDK 57 / React Native, with Hebrew copy, RTL layouts and a dark theme.
   the card keeps the entry; undo removes
   only the new entry. A lost undo response stays visible and can be retried for
   that same entry without resubmitting the expense.
+- After saving a categorized merchant, Quick Add can offer to remember that
+  category for future entries. Remember requires an explicit tap; Not now leaves
+  the saved transaction alone. Repeated Other expenses first offer a better
+  category, applied to this saved entry and future suggestions only. Earlier
+  transactions are never recategorized by this flow. Generic payees and merchants
+  with an active exact rule do not trigger the offer. Failed confirmations remain
+  retryable without resubmitting the expense or automatically repeating a write.
 - Recurring commitments can be created, edited, deactivated, and deleted.
   Editing unrelated details preserves the existing expected date.
 - Expense, income, and savings goals support defaults and month overrides.
