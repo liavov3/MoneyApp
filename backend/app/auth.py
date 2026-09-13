@@ -1,30 +1,29 @@
-"""Server-side principal resolution (API_CONTRACT §3).
+"""Private session resolution (PRIVATE_AUTH_V0_0_2).
 
-v0.0.1 is single-user, local/dev mode. The client presents a static dev bearer
-token (`Authorization: Bearer <token>`); the server resolves it to the single
-dev principal and scopes every query to the resolved `user_id`. The client
-NEVER supplies `user_id` — there is no body field or query parameter through
-which a client can name a different user (firm rule, §3).
-
-Missing/invalid token -> `401 unauthorized` with the standard error envelope
-(§5). The token itself is never logged (QA-10-06).
-
-When real auth lands, ONLY this resolution layer changes; resource routes and
-response shapes do not (the reason `user_id` is server-resolved and absent from
-every payload).
+Every resource still uses the server-resolved principal and ownership-as-404
+from API_CONTRACT §3. Static bearer access is opt-in for local/tests only.
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 import secrets
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
-from fastapi import Request
+from fastapi import Depends, Request
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db import get_session
 from app.errors import AppError
+from app.models import PrivateSession
 
 _BEARER_PREFIX = "bearer "
+SESSION_SECONDS = 30 * 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -32,6 +31,8 @@ class Principal:
     """The authenticated, server-resolved current user. Opaque to the client."""
 
     user_id: str
+    session_hash: str | None = None
+    expires_at: datetime | None = None
 
 
 def _extract_bearer_token(authorization: str | None) -> str | None:
@@ -47,21 +48,55 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
     return token or None
 
 
-def require_principal(request: Request) -> Principal:
-    """FastAPI dependency: resolve the current principal or raise 401.
+def cookie_name() -> str:
+    return "__Host-moneysaver_session" if get_settings().production else "moneysaver_session"
 
-    A valid dev token resolves to the single server-side dev user. The token is
-    compared in constant time. The token value is never logged or echoed.
-    """
+
+def token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def require_browser_origin(request: Request) -> None:
     settings = get_settings()
-    expected = settings.dev_bearer_token
-    presented = _extract_bearer_token(request.headers.get("Authorization"))
+    expected = settings.browser_origin
+    if not expected and not settings.production:
+        expected = str(request.base_url).rstrip("/")
+    if (not expected or request.headers.get("origin") != expected or
+            request.headers.get("x-moneysaver-client") != "web"):
+        raise AppError(code="unsupported_operation")
 
-    # No server token configured, or no/blank token presented, or mismatch.
-    if not expected or not presented or not secrets.compare_digest(
-        presented.encode("utf-8"), expected.encode("utf-8")
-    ):
+
+def presented_session(request: Request) -> str | None:
+    # An explicitly supplied Authorization header cannot fall back to a cookie.
+    if "authorization" in request.headers:
+        return _extract_bearer_token(request.headers.get("authorization"))
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        require_browser_origin(request)
+    return request.cookies.get(cookie_name())
+
+
+async def require_principal(request: Request, db: AsyncSession = Depends(get_session)) -> Principal:
+    """Resolve only the configured owner; resource ownership filters stay intact."""
+    settings = get_settings()
+    bearer = _extract_bearer_token(request.headers.get("authorization"))
+    if (settings.allow_dev_bearer and not settings.production and
+            settings.dev_bearer_token and bearer and secrets.compare_digest(
+                bearer.encode("utf-8"), settings.dev_bearer_token.encode("utf-8"))):
+        return Principal(user_id=settings.dev_user_id)
+
+    if "authorization" not in request.headers and not request.cookies.get(cookie_name()):
         raise AppError(code="unauthorized")
-
-    # user_id is resolved here, server-side — never from the client.
-    return Principal(user_id=settings.dev_user_id)
+    token = presented_session(request)
+    if not token or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+        raise AppError(code="unauthorized")
+    try:
+        row = await db.scalar(select(PrivateSession).where(
+            PrivateSession.token_hash == token_digest(token),
+            PrivateSession.user_id == settings.owner_user_id,
+            PrivateSession.expires_at > datetime.now(timezone.utc),
+        ))
+    except SQLAlchemyError:
+        raise AppError(code="backend_unavailable") from None
+    if row is None:
+        raise AppError(code="unauthorized")
+    return Principal(user_id=row.user_id, session_hash=row.token_hash, expires_at=row.expires_at)

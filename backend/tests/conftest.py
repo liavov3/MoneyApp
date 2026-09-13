@@ -35,6 +35,17 @@ from app.config import get_settings, normalize_async_dsn
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _legacy_test_auth_only(monkeypatch):
+    # Existing financial tests keep their random isolated dev principals. The
+    # private-auth suite explicitly disables this opt-in to test real sessions.
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("ALLOW_DEV_BEARER", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def _db_url() -> str:
     """Resolve the DSN the test suite should target (asyncpg-normalized).
 

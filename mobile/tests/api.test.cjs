@@ -20,6 +20,18 @@ test('field error codes remain available without exposing server input text', as
     return true;
   });
 });
+
+test('web requests use a cookie and CSRF header without an Authorization token', async () => {
+  credentials = { baseUrl: 'https://test.example', token: null };
+  global.fetch = async (_, options) => {
+    assert.equal(options.credentials, 'same-origin');
+    assert.equal(options.cache, 'no-store');
+    assert.equal(options.headers['X-MoneySaver-Client'], 'web');
+    assert.equal(options.headers.Authorization, undefined);
+    return new Response(JSON.stringify({ transaction: { amount_minor: -101 } }), { status: 201 });
+  };
+  assert.equal((await quickAdd({ amount: '1.01' })).transaction.amount_minor, -101);
+});
 test('history pagination combines category and month filters and returns the cursor', async () => {
   global.fetch = async (url, options) => {
     const parsed = new URL(url);

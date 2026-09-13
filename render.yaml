@@ -1,0 +1,21 @@
+# Private web app and API on one origin; no paid services or Render database.
+services:
+  - type: web
+    name: moneysaver-private
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: off
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_ENV
+        value: production
+      - key: ALLOW_DEV_BEARER
+        value: "false"
+      - key: OWNER_USER_ID
+        value: 00000000-0000-0000-0000-000000000001
+      - key: LOG_LEVEL
+        value: INFO

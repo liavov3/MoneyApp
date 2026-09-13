@@ -1,10 +1,16 @@
-# Money App — Backend (v0.0.1, manual-first) — Foundation Slice
+# MoneySaver backend
 
-FastAPI + SQLAlchemy 2.x (async) + Alembic + PostgreSQL (pgvector installed,
-unused). This is the **foundation slice only**: project skeleton, the standard
-error envelope, DB connection, migrations for the 7 active tables (plus the two
-deferred FK targets), the 22-category seed, and `GET /api/v1/health`. No feature
-endpoints yet.
+FastAPI + SQLAlchemy 2.x (async) + Alembic + PostgreSQL. The app includes manual
+transactions, merchants, categories, recurring projections, monthly goals,
+and private owner authentication. See [the deployment guide](../docs/PRIVATE_DEPLOYMENT.md)
+for the free iPhone web installation and [the auth revision](../docs/PRIVATE_AUTH_V0_0_2.md)
+for login, session cookies, native bearer sessions, CSRF, and provisioning.
+
+Private login is the default. Run `python -m app.owner_setup` locally to choose
+the first owner's username/password, or `python -m app.manage_auth --reset` to
+replace a password and revoke all sessions. The deployed API has no registration
+or setup endpoint. `ALLOW_DEV_BEARER=true` is restricted to local/test tooling;
+production startup refuses it. Existing financial resource contracts are unchanged.
 
 Built against the frozen specs in `../docs/`:
 `DATABASE_SCHEMA_V0_0_1.md`, `API_CONTRACT_V0_0_1.md`, `CATEGORY_TAXONOMY.md`,
@@ -121,18 +127,17 @@ confidence level, enum names, opaque uuids, counts). Any other key is dropped
 with a generic warning — never merchant text, amount, note, raw input,
 correction content, email, or tokens.
 
-## Auth (dev/local, server-resolved)
+## Authentication
 
-`GET /api/v1/categories` requires auth. v0.0.1 is single-user/dev: the client
-sends `Authorization: Bearer <DEV_BEARER_TOKEN>`; the server resolves it to the
-single dev principal (`app/auth.py`). `user_id` is **server-resolved only** —
-never accepted from the client (API_CONTRACT §3). Missing/invalid token →
-`401 unauthorized` standard envelope. Set `DEV_BEARER_TOKEN` in `.env`
-(`.env.example` ships a fake placeholder only). The token is never logged.
+All financial resources require the server-resolved owner. Web clients use
+HttpOnly cookies; native clients use revocable bearer sessions issued by
+`POST /api/v1/auth/login`. Missing/invalid credentials return the standard 401
+envelope. No resource accepts a client-supplied user ID. The old static token
+works only when explicitly enabled for local/test tools, never in production.
 
 ## Scope guardrails
 
-- Implemented: `GET /api/v1/health`, `GET /api/v1/categories` (auth-required).
-- No Quick Add, transaction/merchant/rule/recurring, or Home endpoints yet.
+- Financial resource contracts remain governed by the frozen v0.0.1 documents;
+  private authentication is the separately authorized v0.0.2 addition.
 - `accounts` / `import_batches` exist solely as FK targets; no routes expose them.
 - pgvector is installed; **zero** vector tables/rows are created.

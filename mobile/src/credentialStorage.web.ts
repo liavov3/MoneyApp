@@ -1,6 +1,7 @@
 import type { CredentialStorage } from './sessionStore';
 
-// Web is a temporary preview. Never persist bearer tokens in browser storage.
+// The browser manages the HttpOnly session cookie. JavaScript never receives
+// or persists a web session secret, password, or financial payload.
 export const credentialStorage: CredentialStorage = {
   read: async () => null,
   write: async () => {},

@@ -3,36 +3,32 @@ import React, { useState, useSyncExternalStore } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ApiError, createApiClient } from '../api';
+import { SignInError } from '../authClient';
 import { AppText, Button, Card, Input, Screen } from '../components/ui';
-import { configuredApiUrl, session } from '../session';
-import { ConnectionError, normalizeBaseUrl } from '../sessionStore';
+import { session } from '../session';
+import { ConnectionError } from '../sessionStore';
 import { colors, font, spacing, weight } from '../theme';
 
 export function ConnectionScreen() {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
-  const [token, setToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const insets = useSafeAreaInsets();
-  let server = '';
-  try { server = normalizeBaseUrl(configuredApiUrl); } catch { /* No malformed URL details shown. */ }
 
   const connect = async () => {
-    if (state.busy || !token.trim()) return;
+    if (state.busy || !username.trim() || !password) return;
     setMessage(null);
     try {
-      await session.connect(token, async (credentials) => {
-        const result = await createApiClient({ getConnection: () => credentials, invalidate: () => {} }).getCategories();
-        if (!Array.isArray(result.items)) throw new Error('invalid_response');
-      });
-      setToken('');
+      await session.signIn(username, password);
+      setPassword('');
     } catch (error) {
       setMessage(
-        error instanceof ApiError && error.status === 401 ? 'קוד הגישה לא תקין. בדוק אותו ונסה שוב.'
-          : error instanceof ConnectionError && error.code === 'invalid_token' ? 'יש להדביק את קוד הגישה בלבד, ללא רווחים.'
+        error instanceof SignInError && (error.status === 401 || error.status === 422) ? 'שם המשתמש או הסיסמה אינם נכונים.'
+          : error instanceof SignInError && error.status === 429 ? 'בוצעו ניסיונות התחברות רבים. אפשר לנסות שוב בעוד דקה.'
           : error instanceof ConnectionError && error.code === 'invalid_url' ? 'כתובת השרת לא הוגדרה כראוי.'
           : error instanceof ConnectionError && error.code === 'storage_write' ? 'החיבור הצליח, אבל לא הצלחנו לשמור אותו במכשיר. נסה שוב.'
-          : 'לא הצלחנו להתחבר. בדוק שהשרת זמין ושהמכשיר מחובר לרשת המתאימה.',
+          : 'לא הצלחנו להתחבר. בדוק את החיבור לאינטרנט ונסה שוב.',
       );
     }
   };
@@ -44,34 +40,39 @@ export function ConnectionScreen() {
           <View style={styles.heading}>
             <Ionicons name="lock-closed-outline" size={38} color={colors.accent} />
             <AppText size={font.h1} weight={weight.bold} align="center">
-              {state.status === 'expired' ? 'חיבור מחדש' : 'התחברות ל־MoneySaver'}
+              {state.status === 'expired' ? 'התחברות מחדש' : 'ברוך הבא ל־MoneySaver'}
             </AppText>
             <AppText color={colors.textSecondary} align="center">
-              {state.status === 'expired' ? 'נדרש קוד גישה עדכני. הטופס הפתוח נשמר כאן.' : 'הזן את קוד הגישה לשרת האישי שלך כדי להתחיל.'}
+              {state.status === 'expired' ? 'יש להתחבר שוב. הטופס הפתוח נשמר כאן.' : 'המקום הפרטי שלך לניהול הכסף.'}
             </AppText>
           </View>
           <Card style={styles.form}>
-            {server ? <AppText size={font.caption} color={colors.textMuted} style={styles.server}>{server}</AppText> : null}
-            <AppText weight={weight.medium}>קוד גישה</AppText>
-            <Input value={token} onChangeText={setToken} accessibilityLabel="קוד גישה" placeholder="הדבק את קוד הגישה"
-              secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none"
+            <AppText weight={weight.medium}>שם משתמש</AppText>
+            <Input value={username} onChangeText={setUsername} accessibilityLabel="שם משתמש" placeholder="שם המשתמש שלך"
+              autoCapitalize="none" autoCorrect={false} autoComplete="username" textContentType="username"
+              editable={!state.busy} maxLength={80} style={styles.server} iconLeft="person-outline" />
+            <AppText weight={weight.medium}>סיסמה</AppText>
+            <Input value={password} onChangeText={setPassword} accessibilityLabel="סיסמה" placeholder="הסיסמה שלך"
+              secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete="current-password" textContentType="password" maxLength={128}
               editable={!state.busy} returnKeyType="go" onSubmitEditing={() => { void connect(); }}
-              style={styles.server} iconLeft="key-outline" />
+              style={styles.server} iconLeft="lock-closed-outline" />
             {message ? <AppText color={colors.danger}>{message}</AppText> : null}
             {state.error ? (
               <AppText color={colors.danger}>
                 {state.error === 'storage_clear'
-                  ? 'החיבור הוסתר, אבל לא הצלחנו להסיר את הקוד השמור. נסה שוב לפני סגירת האפליקציה.'
-                  : 'לא הצלחנו לקרוא את החיבור השמור. אפשר לנסות שוב או להזין את הקוד מחדש.'}
+                  ? 'לא הצלחנו להסיר את החיבור השמור מהמכשיר. יש לנסות שוב.'
+                  : state.error === 'logout' ? 'היציאה לא הושלמה. בדוק את החיבור ונסה שוב.'
+                  : 'לא הצלחנו לבדוק את ההתחברות השמורה. אפשר לנסות שוב או להתחבר מחדש.'}
               </AppText>
             ) : null}
-            <Button title="התחברות" onPress={() => { void connect(); }} loading={state.busy} disabled={!token.trim()} />
+            <Button title="התחברות" onPress={() => { void connect(); }} loading={state.busy} disabled={!username.trim() || !password} />
+            {state.busy ? <AppText size={font.caption} color={colors.textMuted}>מתחבר… הפתיחה הראשונה עשויה לקחת עד דקה.</AppText> : null}
             {state.error === 'storage_read' ? <Button title="טעינת החיבור מחדש" variant="ghost" disabled={state.busy} onPress={() => { void session.restore(); }} /> : null}
             {state.status === 'expired' || state.error === 'storage_clear' ? (
-              <Button title="שכחת החיבור ויציאה" variant="ghost" disabled={state.busy} onPress={() => { void session.disconnect(); }} />
+              <Button title="יציאה" variant="ghost" disabled={state.busy} onPress={() => { void session.disconnect(); }} />
             ) : null}
             <AppText size={font.caption} color={colors.textMuted}>
-              {Platform.OS === 'web' ? 'בתצוגת הדפדפן, החיבור נשמר רק עד לרענון או סגירת הדף.' : 'קוד הגישה נשמר באחסון המאובטח במכשיר.'}
+              ההתחברות נשמרת במכשיר האישי שלך עד 30 יום. ניתן לצאת בכל רגע דרך ההגדרות.
             </AppText>
             {state.status === 'expired' ? <AppText size={font.caption} color={colors.textMuted}>יציאה סוגרת טפסים שלא נשמרו. עסקאות שנשמרו נשארות בשרת.</AppText> : null}
           </Card>

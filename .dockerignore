@@ -1,0 +1,17 @@
+.git
+.codex
+.claude
+.agents
+.preview
+**/.env
+**/*.env
+**/.venv
+**/node_modules
+**/.expo
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/*.log
+**/*.map
+backend/tests
+mobile/tests

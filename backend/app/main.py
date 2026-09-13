@@ -1,19 +1,11 @@
-"""FastAPI application factory — Money App backend v0.0.1 (foundation slice).
-
-Mounts the API under /api/v1. Implemented so far: GET /api/v1/health,
-GET /api/v1/categories, POST /api/v1/transactions/quick-add (amount-only
-subset), GET /api/v1/transactions (list), and GET /api/v1/transactions/{id}
-(single read), and DELETE /api/v1/transactions/{id} (hard delete) — all
-auth-required with a server-resolved principal. Remaining feature endpoints
-(merchant matching, categorize, home, recurring, PATCH edit) are intentionally
-NOT implemented yet.
-"""
+"""MoneySaver API and optional same-origin static web application."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.db import dispose_engine
@@ -27,6 +19,7 @@ from app.routers import (
     merchants,
     monthly_goals,
     recurring,
+    private_auth,
     transactions,
 )
 
@@ -36,23 +29,29 @@ API_V1_PREFIX = "/api/v1"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    settings.validate_deployment()
     configure_logging(settings.log_level)
     yield
     await dispose_engine()
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
     app = FastAPI(
         title="Money App API",
         version="0.0.1",
-        description="Manual-first personal finance backend (foundation slice).",
+        description="Manual-first personal finance with private owner sessions.",
         lifespan=lifespan,
+        docs_url=None if settings.production else "/docs",
+        redoc_url=None if settings.production else "/redoc",
+        openapi_url=None if settings.production else "/openapi.json",
     )
 
     app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)
 
     app.include_router(health.router, prefix=API_V1_PREFIX, tags=["health"])
+    app.include_router(private_auth.router, prefix=API_V1_PREFIX, tags=["auth"])
     app.include_router(categories.router, prefix=API_V1_PREFIX, tags=["categories"])
     app.include_router(merchants.router, prefix=API_V1_PREFIX, tags=["merchants"])
     app.include_router(transactions.router, prefix=API_V1_PREFIX, tags=["transactions"])
@@ -62,6 +61,8 @@ def create_app() -> FastAPI:
         monthly_goals.router, prefix=API_V1_PREFIX, tags=["monthly-goals"]
     )
 
+    if settings.web_dist_dir:
+        app.mount("/", StaticFiles(directory=settings.web_dist_dir, html=True), name="web")
     return app
 
 

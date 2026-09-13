@@ -43,17 +43,16 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
 
       <View style={styles.content}>
         <AppText size={font.caption} color={colors.textMuted} style={{ marginBottom: spacing.sm }}>
-          חיבור
+          פרטיות והתחברות
         </AppText>
         <Card>
-          <Row label="כתובת שרת" value={session.getConnection()?.baseUrl ?? ''} />
-          <View style={styles.divider} />
-          <Row label="גישה לשרת האישי" value="מחובר" ok />
-          <Button title="שכחת החיבור במכשיר" variant="ghost" disabled={state.busy}
+          <Row label="החשבון האישי" value="מחובר" ok />
+          <Button title="יציאה מהחשבון" variant="ghost" disabled={state.busy} loading={state.busy}
             onPress={() => { void session.disconnect(); }} style={{ marginTop: spacing.md }} />
           <AppText size={font.caption} color={colors.textMuted} style={{ marginTop: spacing.sm }}>
-            מסיר את קוד הגישה מהמכשיר. העסקאות שנשמרו נשארות בשרת.
+            היציאה מבטלת את ההתחברות במכשיר הזה. העסקאות שלך נשמרות בחשבון.
           </AppText>
+          {state.error === 'logout' ? <AppText color={colors.danger} style={{ marginTop: spacing.sm }}>היציאה לא הושלמה. בדוק את החיבור לאינטרנט ונסה שוב.</AppText> : null}
         </Card>
 
         <AppText size={font.caption} color={colors.textMuted} style={{ marginTop: spacing.lg, marginBottom: spacing.sm }}>

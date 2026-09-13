@@ -31,6 +31,7 @@ ERROR_STATUS: dict[str, int] = {
     "unsupported_operation": 403,
     "backend_unavailable": 503,
     "internal_error": 500,
+    "rate_limited": 429,
 }
 
 # Generic, content-free messages.
@@ -44,6 +45,7 @@ ERROR_MESSAGE: dict[str, str] = {
         "Service temporarily unavailable — your entry was not saved. Try again."
     ),
     "internal_error": "Something went wrong. Try again.",
+    "rate_limited": "Too many sign-in attempts. Please wait and try again.",
 }
 
 
@@ -97,13 +99,14 @@ def _json_error(
         "request_error",
         level=logging.WARNING if http_status < 500 else logging.ERROR,
         request_id=request_id,
-        endpoint=request.url.path,
+        endpoint=getattr(request.scope.get("route"), "path", "unmatched"),
         method=request.method,
         status=http_status,
         validation_error_code=code,
     )
     return JSONResponse(
         status_code=http_status,
+        headers={"Retry-After": "60"} if code == "rate_limited" else None,
         content=build_envelope(
             code, request_id, message=message, field_errors=field_errors
         ),

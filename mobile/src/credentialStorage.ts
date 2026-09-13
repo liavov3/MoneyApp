@@ -1,13 +1,14 @@
 import * as SecureStore from 'expo-secure-store';
 import type { CredentialStorage } from './sessionStore';
 
-const key = 'moneyapp.connection.v1';
+const key = 'moneyapp.private-session.v2';
 const options: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
 };
 
 export const credentialStorage: CredentialStorage = {
   read: async () => {
+    await SecureStore.deleteItemAsync('moneyapp.connection.v1', options);
     const value = await SecureStore.getItemAsync(key, options);
     return value === null ? null : JSON.parse(value);
   },

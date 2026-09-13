@@ -105,6 +105,39 @@ class User(Base):
 # ---------------------------------------------------------------------------
 # accounts (deferred FK target — schema §4; created empty now)
 # ---------------------------------------------------------------------------
+class PrivateAccount(Base):
+    """Operator-provisioned login; PRIVATE_AUTH_V0_0_2, not a public signup."""
+    __tablename__ = "private_accounts"
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[object] = _created_at()
+    updated_at: Mapped[object] = _updated_at()
+
+
+class PrivateSession(Base):
+    __tablename__ = "private_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("private_accounts.user_id", ondelete="CASCADE"), nullable=False,
+    )
+    created_at: Mapped[object] = _created_at()
+    expires_at: Mapped[object] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    __table_args__ = (Index("ix_private_sessions_user_expiry", "user_id", "expires_at"),)
+
+
+class PrivateLoginWindow(Base):
+    __tablename__ = "private_login_windows"
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    window_started_at: Mapped[object] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    __table_args__ = (CheckConstraint("attempts >= 0", name="ck_private_login_attempts"),)
+
+
 class Account(Base):
     __tablename__ = "accounts"
 

@@ -4,9 +4,10 @@ Expo SDK 57 / React Native, with Hebrew copy, RTL layouts and a dark theme.
 
 ## Available flows
 
-- The connection screen validates an access code against the personal server.
-  Native builds save it in Expo SecureStore, bound to the configured server URL.
-  Web previews retain it in memory only, until refresh or close.
+- The opening screen signs in to a private owner account with username/password.
+  Native sessions use Expo SecureStore; web sessions use an HttpOnly cookie that
+  survives refresh. The password is never persisted by app code. There is no
+  public registration and no access-code prompt.
 - Home shows actual spending and recurring projections separately, category
   totals, recent transactions, and monthly goals.
 - Quick Add records expenses, income, or refunds. Amount is required; merchant,
@@ -57,29 +58,27 @@ address for `EXPO_PUBLIC_API_URL` and connect to the same network. Configure loc
 values in ignored `mobile/.env`; restart Expo after changing them. The health
 endpoint is `/api/v1/health`.
 
-Set only `EXPO_PUBLIC_API_URL` in mobile configuration. Enter the server's
-`DEV_BEARER_TOKEN` value in the masked connection screen on first launch; never
-put it in a public environment variable. The old `EXPO_PUBLIC_API_TOKEN` setting
-is ignored and can be removed from local mobile configuration. Public servers
+Set only `EXPO_PUBLIC_API_URL` in native mobile configuration. Provision a
+username/password through the local backend setup page (see
+[private deployment](../docs/PRIVATE_DEPLOYMENT.md)). The old
+`EXPO_PUBLIC_API_TOKEN` setting is ignored and can be removed. Public servers
 must use HTTPS; local development can use HTTP on localhost, loopback, or a
 private LAN IPv4 address. URLs containing credentials, query strings, or fragments
 are rejected.
 
-Settings can forget the connection, removing the stored access code and closing
-financial screens. This does not delete saved server transactions. If an access
-code expires, the app covers every screen and open sheet until reconnection to
-the same configured personal server; entered fields remain in memory and writes
-are never automatically retried. Secure-storage read/write/erase failures remain
-visible and recoverable. Forgetting the connection closes unsaved forms.
+Settings signs out by revoking the server session before removing the stored
+connection and closing financial screens. Failed logout stays visible and
+retryable. An expired session covers screens and open sheets until sign-in;
+drafts remain in memory, and writes are never automatically retried. Native
+credential persistence still needs real-device verification. Remembered sessions
+expire after 30 days; resetting the password revokes all sessions immediately.
 
-This remains the contract's single-user personal-server authentication model.
-There is no account registration, server token refresh/revocation endpoint, or
-biometric app lock. Native credential persistence and modal behavior still need
-real-device verification before distribution.
-
-Web preview dependencies are installed. `npm run web` starts the web client;
-serve the API on the same origin or configure an appropriate development proxy.
-Native Expo requests do not need browser CORS configuration.
+For web, run `npm run build:web`, set `WEB_DIST_DIR` on the backend to the
+absolute `mobile/dist` path, and open the backend address. Web always uses the
+same origin for API calls. The manifest and Apple touch icon support Add to Home
+Screen. There is no service worker, offline data cache or offline write queue.
+The Docker build serves this export and FastAPI together. Native Expo requests
+do not need browser CORS configuration.
 
 ## Verification
 

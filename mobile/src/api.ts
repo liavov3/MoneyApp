@@ -40,7 +40,7 @@ export class ApiError extends Error {
 export function createApiClient(transport: SessionTransport) {
   async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const credentials = transport.getConnection();
-    if (!credentials) throw new ApiError('missing_token', 401, 'unauthorized');
+    if (!credentials) throw new ApiError('missing_session', 401, 'unauthorized');
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
@@ -49,8 +49,12 @@ export function createApiClient(transport: SessionTransport) {
         method,
         redirect: 'error',
         signal: controller.signal,
+        credentials: credentials.token === null ? 'same-origin' : 'omit',
+        cache: 'no-store',
         headers: {
-          Authorization: `Bearer ${credentials.token}`,
+          ...(credentials.token === null
+            ? { 'X-MoneySaver-Client': 'web' }
+            : { Authorization: `Bearer ${credentials.token}` }),
           Accept: 'application/json',
           ...(body ? { 'Content-Type': 'application/json' } : {}),
         },

@@ -15,7 +15,7 @@ export function SessionGate() {
     return () => { setCovers((current) => current.filter((item) => item !== id)); };
   }, []);
   useEffect(() => { void session.restore(); }, []);
-  if (state.status === 'loading') return <Screen><LoadingState label="פותח את החיבור השמור…" /></Screen>;
+  if (state.status === 'loading') return <Screen><LoadingState label="פותח את MoneySaver… בפתיחה הראשונה זה עשוי לקחת עד דקה." /></Screen>;
   if (state.status === 'disconnected') return <ConnectionScreen />;
   return (
     <ConnectionContext.Provider value={{ locked: state.status === 'expired', renderGate, registerCover, topCover: covers[covers.length - 1] ?? null }}>

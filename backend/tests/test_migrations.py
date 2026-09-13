@@ -18,6 +18,9 @@ EXPECTED_TABLES = {
     "accounts",
     "import_batches",
     "alembic_version",
+    "private_accounts",
+    "private_sessions",
+    "private_login_windows",
 }
 
 
@@ -60,7 +63,7 @@ async def test_migration_version_at_head(engine) -> None:
         version = (
             await conn.execute(text("SELECT version_num FROM alembic_version"))
         ).scalar_one()
-        assert version == "0005_monthly_goals_types_scopes"
+        assert version == "0006_private_auth"
 
 
 async def test_dev_user_seeded(engine) -> None:

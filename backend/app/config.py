@@ -17,6 +17,7 @@ behavior.
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
@@ -107,6 +108,35 @@ class Settings(BaseSettings):
     # `users` row is seeded by the first user-owned-write slice; v0.0.1
     # categories are system rows (user_id IS NULL) and need no users row.
     dev_user_id: str = "00000000-0000-0000-0000-000000000001"
+
+    # Private deployment: a single pre-provisioned owner, never client-selected.
+    owner_user_id: str = "00000000-0000-0000-0000-000000000001"
+    allow_dev_bearer: bool = False
+    public_origin: str | None = None
+    render_external_hostname: str | None = None
+    web_dist_dir: str | None = None
+
+    @property
+    def production(self) -> bool:
+        return self.app_env not in {"local", "test"}
+
+    @property
+    def browser_origin(self) -> str | None:
+        if self.public_origin:
+            return self.public_origin.rstrip("/")
+        if self.render_external_hostname:
+            return f"https://{self.render_external_hostname}"
+        return None
+
+    def validate_deployment(self) -> None:
+        if not self.production:
+            return
+        origin = urlsplit(self.browser_origin or "")
+        if (origin.scheme != "https" or not origin.netloc or origin.username or
+                origin.password or origin.query or origin.fragment or origin.path):
+            raise RuntimeError("Production requires an HTTPS PUBLIC_ORIGIN.")
+        if self.allow_dev_bearer:
+            raise RuntimeError("Development bearer access is forbidden in production.")
 
     @property
     def async_database_url(self) -> str:
